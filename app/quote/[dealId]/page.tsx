@@ -1,35 +1,27 @@
 'use client';
 
-// Printable quotation. Company identity, GST rate, validity and terms come
-// from admin → Organisation settings; the quote number/date come from the
-// stored quote record generated on the deal page.
+// Printable quotation — API-backed. Company identity/GST/terms come from
+// admin-configured org settings; the number and totals from the latest
+// stored quote record.
 
-import { useMemo } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { addDays, format } from 'date-fns';
 import { ArrowLeft, Building2, Printer } from 'lucide-react';
-import { useStore } from '@/lib/store';
-import { visibleUserIds } from '@/lib/rbac';
+import { useContact, useDeal, useSettings } from '@/lib/api/crm-hooks';
+import { useMe } from '@/lib/api/hooks';
 import { formatINR } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
 export default function QuotePage() {
   const params = useParams<{ dealId: string }>();
-  const { state, currentUser, hydrated } = useStore();
+  const { data: me } = useMe();
+  const { data, isLoading } = useDeal(params.dealId);
+  const { data: settings } = useSettings();
+  const contactId = data?.deal.contactId ?? '';
+  const { data: contactData } = useContact(contactId);
 
-  const deal = state.deals.find((d) => d.id === params.dealId);
-  const org = state.orgSettings;
-
-  const visible = useMemo(
-    () =>
-      currentUser
-        ? visibleUserIds(state.users, currentUser)
-        : new Set<string>(),
-    [state.users, currentUser],
-  );
-
-  if (!hydrated) {
+  if (isLoading || !settings) {
     return (
       <div className="flex min-h-screen items-center justify-center text-muted-foreground">
         Loading…
@@ -37,7 +29,7 @@ export default function QuotePage() {
     );
   }
 
-  if (!currentUser || !deal || !visible.has(deal.ownerId)) {
+  if (!me || !data || !settings.org) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-4">
         <p className="text-muted-foreground">
@@ -50,29 +42,19 @@ export default function QuotePage() {
     );
   }
 
-  const contact = state.contacts.find((c) => c.id === deal.contactId);
-  const account = contact?.accountId
-    ? state.accounts.find((a) => a.id === contact.accountId)
-    : undefined;
-  const owner = state.users.find((u) => u.id === deal.ownerId);
+  const { deal, quotes } = data;
+  const org = settings.org;
+  const contact = contactData?.contact;
+  const account = contact?.account;
   const items = deal.lineItems ?? [];
-  const productById = new Map(state.products.map((p) => [p.id, p]));
 
-  // Latest stored quote for this deal; fall back to computing live.
-  const quote = state.quotes
-    .filter((q) => q.dealId === deal.id)
-    .sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    )[0];
+  const quote = quotes[0];
   const subtotal =
     quote?.subtotal ?? items.reduce((s, it) => s + it.qty * it.price, 0);
   const gst = quote?.gst ?? Math.round(subtotal * org.gstRate);
   const total = quote?.total ?? subtotal + gst;
   const quoteDate = quote ? new Date(quote.createdAt) : new Date();
-  const quoteNo =
-    quote?.number ??
-    `Q-${format(quoteDate, 'yyyyMM')}-${deal.id.replace(/\D/g, '').slice(-4).padStart(4, '0')}`;
+  const quoteNo = quote?.number ?? 'DRAFT';
 
   return (
     <div className="min-h-screen bg-muted/30 py-8 print:bg-white print:py-0">
@@ -133,7 +115,7 @@ export default function QuotePage() {
               Valid until:{' '}
               {format(addDays(quoteDate, org.quoteValidityDays), 'd MMM yyyy')}
             </p>
-            <p>Prepared by: {owner?.name ?? '—'}</p>
+            <p>Prepared by: {deal.owner?.name ?? '—'}</p>
             <p className="text-neutral-500">{deal.title}</p>
           </div>
         </section>
@@ -157,27 +139,24 @@ export default function QuotePage() {
                 </td>
               </tr>
             )}
-            {items.map((it, i) => {
-              const p = productById.get(it.productId);
-              return (
-                <tr key={it.productId} className="border-b border-neutral-200">
-                  <td className="py-2.5 pr-2 text-neutral-500">{i + 1}</td>
-                  <td className="py-2.5 pr-2">
-                    <p className="font-medium">{p?.name ?? '—'}</p>
-                    <p className="text-xs text-neutral-500">{p?.sku}</p>
-                  </td>
-                  <td className="py-2.5 pr-2 text-right tabular-nums">
-                    {it.qty}
-                  </td>
-                  <td className="py-2.5 pr-2 text-right tabular-nums">
-                    {formatINR(it.price)}
-                  </td>
-                  <td className="py-2.5 text-right font-medium tabular-nums">
-                    {formatINR(it.qty * it.price)}
-                  </td>
-                </tr>
-              );
-            })}
+            {items.map((it, i) => (
+              <tr key={it.productId} className="border-b border-neutral-200">
+                <td className="py-2.5 pr-2 text-neutral-500">{i + 1}</td>
+                <td className="py-2.5 pr-2">
+                  <p className="font-medium">{it.productName ?? '—'}</p>
+                  <p className="text-xs text-neutral-500">{it.sku}</p>
+                </td>
+                <td className="py-2.5 pr-2 text-right tabular-nums">
+                  {it.qty}
+                </td>
+                <td className="py-2.5 pr-2 text-right tabular-nums">
+                  {formatINR(it.price)}
+                </td>
+                <td className="py-2.5 text-right font-medium tabular-nums">
+                  {formatINR(it.qty * it.price)}
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
 

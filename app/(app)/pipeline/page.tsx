@@ -1,8 +1,7 @@
 'use client';
 
-// Deal pipeline as a drag-and-drop kanban. Dragging a card onto a column
-// moves the deal to that stage; dropping on Lost first asks for a reason.
-// A stage dropdown on each card covers touch devices without drag.
+// Deal pipeline kanban — API-backed with optimistic drag-and-drop. Stage
+// labels and weights come from the database (admin-editable).
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -19,9 +18,14 @@ import {
 } from '@dnd-kit/core';
 import { format } from 'date-fns';
 import { CalendarDays, GripVertical, IndianRupee } from 'lucide-react';
-import { useStore } from '@/lib/store';
-import { visibleUserIds } from '@/lib/rbac';
-import { Deal, DealStage, PIPELINE_STAGES } from '@/lib/types';
+import {
+  WireDeal,
+  useDeals,
+  useMoveDealStage,
+  useStageConfig,
+} from '@/lib/api/crm-hooks';
+import { useMe } from '@/lib/api/hooks';
+import { DealStage, PIPELINE_STAGES } from '@/lib/types';
 import { cn, formatINR, initials } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -45,23 +49,16 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
-interface CardData {
-  deal: Deal;
-  contactName: string;
-  ownerName: string;
-}
-
 function DealCard({
-  data,
+  deal,
   onStageSelect,
   dragging,
 }: {
-  data: CardData;
+  deal: WireDeal;
   onStageSelect?: (dealId: string, stage: DealStage) => void;
   dragging?: boolean;
 }) {
-  const { stages } = useStore();
-  const { deal, contactName, ownerName } = data;
+  const stages = useStageConfig();
   const closed = deal.stage === 'won' || deal.stage === 'lost';
   return (
     <Card
@@ -102,7 +99,9 @@ function DealCard({
           </DropdownMenu>
         )}
       </div>
-      <p className="text-xs text-muted-foreground">{contactName}</p>
+      <p className="text-xs text-muted-foreground">
+        {deal.contact?.name ?? 'Unknown contact'}
+      </p>
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 font-semibold">
           <IndianRupee className="h-3.5 w-3.5" />
@@ -119,7 +118,9 @@ function DealCard({
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <CalendarDays className="h-3 w-3" />
             {format(
-              new Date(closed && deal.closedAt ? deal.closedAt : deal.expectedClose),
+              new Date(
+                closed && deal.closedAt ? deal.closedAt : deal.expectedClose,
+              ),
               'd MMM',
             )}
           </span>
@@ -128,24 +129,26 @@ function DealCard({
       <div className="flex items-center gap-1.5 pt-1">
         <Avatar className="h-5 w-5">
           <AvatarFallback className="text-[9px]">
-            {initials(ownerName)}
+            {initials(deal.owner?.name ?? '—')}
           </AvatarFallback>
         </Avatar>
-        <span className="text-xs text-muted-foreground">{ownerName}</span>
+        <span className="text-xs text-muted-foreground">
+          {deal.owner?.name ?? '—'}
+        </span>
       </div>
     </Card>
   );
 }
 
 function DraggableCard({
-  data,
+  deal,
   onStageSelect,
 }: {
-  data: CardData;
+  deal: WireDeal;
   onStageSelect: (dealId: string, stage: DealStage) => void;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: data.deal.id,
+    id: deal.id,
   });
   return (
     <div
@@ -154,23 +157,23 @@ function DraggableCard({
       {...attributes}
       className={cn('cursor-grab touch-none', isDragging && 'opacity-40')}
     >
-      <DealCard data={data} onStageSelect={onStageSelect} />
+      <DealCard deal={deal} onStageSelect={onStageSelect} />
     </div>
   );
 }
 
 function StageColumn({
   stage,
-  cards,
+  deals,
   onStageSelect,
 }: {
   stage: DealStage;
-  cards: CardData[];
+  deals: WireDeal[];
   onStageSelect: (dealId: string, stage: DealStage) => void;
 }) {
-  const { stages } = useStore();
+  const stages = useStageConfig();
   const { setNodeRef, isOver } = useDroppable({ id: stage });
-  const total = cards.reduce((sum, c) => sum + c.deal.value, 0);
+  const total = deals.reduce((sum, d) => sum + d.value, 0);
   return (
     <div
       ref={setNodeRef}
@@ -183,17 +186,17 @@ function StageColumn({
       <div className="flex items-center justify-between p-3 pb-2">
         <div className="flex items-center gap-2">
           <span className="font-medium">{stages[stage].label}</span>
-          <Badge variant="secondary">{cards.length}</Badge>
+          <Badge variant="secondary">{deals.length}</Badge>
         </div>
         <span className="text-xs text-muted-foreground">
           {formatINR(total)}
         </span>
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto p-3 pt-1">
-        {cards.map((c) => (
-          <DraggableCard key={c.deal.id} data={c} onStageSelect={onStageSelect} />
+        {deals.map((d) => (
+          <DraggableCard key={d.id} deal={d} onStageSelect={onStageSelect} />
         ))}
-        {cards.length === 0 && (
+        {deals.length === 0 && (
           <p className="py-6 text-center text-xs text-muted-foreground">
             No deals
           </p>
@@ -204,7 +207,9 @@ function StageColumn({
 }
 
 export default function PipelinePage() {
-  const { state, currentUser, moveDealStage } = useStore();
+  const { data: me } = useMe();
+  const { data: deals, isLoading } = useDeals();
+  const moveDeal = useMoveDealStage();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [losing, setLosing] = useState<{ dealId: string } | null>(null);
   const [lostReason, setLostReason] = useState('');
@@ -213,63 +218,42 @@ export default function PipelinePage() {
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
   );
 
-  const visible = useMemo(
-    () =>
-      currentUser
-        ? visibleUserIds(state.users, currentUser)
-        : new Set<string>(),
-    [state.users, currentUser],
-  );
-
-  const cardsByStage = useMemo(() => {
-    const contactById = new Map(state.contacts.map((c) => [c.id, c]));
-    const userById = new Map(state.users.map((u) => [u.id, u]));
-    const map: Record<DealStage, CardData[]> = {
+  const byStage = useMemo(() => {
+    const map: Record<DealStage, WireDeal[]> = {
       qualification: [],
       proposal: [],
       negotiation: [],
       won: [],
       lost: [],
     };
-    for (const deal of state.deals) {
-      if (!visible.has(deal.ownerId) || deal.archived) continue;
-      map[deal.stage].push({
-        deal,
-        contactName: contactById.get(deal.contactId)?.name ?? 'Unknown contact',
-        ownerName: userById.get(deal.ownerId)?.name ?? '—',
-      });
-    }
-    for (const stage of PIPELINE_STAGES) {
-      map[stage].sort(
+    for (const d of deals ?? []) map[d.stage].push(d);
+    for (const s of PIPELINE_STAGES) {
+      map[s].sort(
         (a, b) =>
-          new Date(b.deal.createdAt).getTime() -
-          new Date(a.deal.createdAt).getTime(),
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       );
     }
     return map;
-  }, [state.deals, state.contacts, state.users, visible]);
+  }, [deals]);
 
-  const activeCard = useMemo(() => {
-    if (!activeId) return null;
-    for (const stage of PIPELINE_STAGES) {
-      const found = cardsByStage[stage].find((c) => c.deal.id === activeId);
-      if (found) return found;
-    }
-    return null;
-  }, [activeId, cardsByStage]);
+  const activeDeal = useMemo(
+    () => (deals ?? []).find((d) => d.id === activeId) ?? null,
+    [deals, activeId],
+  );
 
-  const openValue =
-    cardsByStage.qualification
-      .concat(cardsByStage.proposal, cardsByStage.negotiation)
-      .reduce((sum, c) => sum + c.deal.value, 0);
-  const wonValue = cardsByStage.won.reduce((sum, c) => sum + c.deal.value, 0);
+  const openValue = byStage.qualification
+    .concat(byStage.proposal, byStage.negotiation)
+    .reduce((s, d) => s + d.value, 0);
+  const wonValue = byStage.won.reduce((s, d) => s + d.value, 0);
+
+  if (!me) return null;
 
   function requestStageChange(dealId: string, stage: DealStage) {
     if (stage === 'lost') {
       setLosing({ dealId });
       setLostReason('');
     } else {
-      moveDealStage(dealId, stage);
+      moveDeal.mutate({ dealId, stage });
     }
   }
 
@@ -284,8 +268,6 @@ export default function PipelinePage() {
     if (!target || !PIPELINE_STAGES.includes(target)) return;
     requestStageChange(dealId, target);
   }
-
-  if (!currentUser) return null;
 
   return (
     <div className="flex h-full flex-col space-y-4">
@@ -310,25 +292,36 @@ export default function PipelinePage() {
         </div>
       </div>
 
-      <DndContext
-        sensors={sensors}
-        onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
-      >
-        <div className="no-scrollbar flex flex-1 gap-4 overflow-x-auto pb-4">
-          {PIPELINE_STAGES.map((stage) => (
-            <StageColumn
-              key={stage}
-              stage={stage}
-              cards={cardsByStage[stage]}
-              onStageSelect={requestStageChange}
+      {isLoading ? (
+        <div className="flex gap-4">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div
+              key={i}
+              className="h-72 w-72 shrink-0 animate-pulse rounded-lg bg-muted"
             />
           ))}
         </div>
-        <DragOverlay>
-          {activeCard ? <DealCard data={activeCard} dragging /> : null}
-        </DragOverlay>
-      </DndContext>
+      ) : (
+        <DndContext
+          sensors={sensors}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+        >
+          <div className="no-scrollbar flex flex-1 gap-4 overflow-x-auto pb-4">
+            {PIPELINE_STAGES.map((stage) => (
+              <StageColumn
+                key={stage}
+                stage={stage}
+                deals={byStage[stage]}
+                onStageSelect={requestStageChange}
+              />
+            ))}
+          </div>
+          <DragOverlay>
+            {activeDeal ? <DealCard deal={activeDeal} dragging /> : null}
+          </DragOverlay>
+        </DndContext>
+      )}
 
       {/* Lost-reason dialog */}
       <Dialog open={!!losing} onOpenChange={(o) => !o && setLosing(null)}>
@@ -356,7 +349,11 @@ export default function PipelinePage() {
               variant="destructive"
               onClick={() => {
                 if (losing) {
-                  moveDealStage(losing.dealId, 'lost', lostReason || undefined);
+                  moveDeal.mutate({
+                    dealId: losing.dealId,
+                    stage: 'lost',
+                    lostReason: lostReason || undefined,
+                  });
                 }
                 setLosing(null);
               }}

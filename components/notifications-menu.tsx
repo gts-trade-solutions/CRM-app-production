@@ -1,12 +1,15 @@
 'use client';
 
-// In-app notifications for the signed-in user: assignments, stage moves on
-// their deals, and closed-won alerts for their reports.
+// In-app notifications — API-backed, polled every 30s, marked read on
+// close, deep-linking to their records.
 
 import { useRouter } from 'next/navigation';
 import { formatDistanceToNow } from 'date-fns';
 import { Bell } from 'lucide-react';
-import { useStore } from '@/lib/store';
+import {
+  useMarkNotificationsRead,
+  useNotifications,
+} from '@/lib/api/crm-hooks';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -18,20 +21,17 @@ import {
 } from '@/components/ui/dropdown-menu';
 
 export function NotificationsMenu() {
-  const { state, currentUser, markNotificationsRead } = useStore();
+  const { data } = useNotifications();
+  const markRead = useMarkNotificationsRead();
   const router = useRouter();
-  if (!currentUser) return null;
 
-  const mine = state.notifications
-    .filter((n) => n.userId === currentUser.id)
-    .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
-    .slice(0, 12);
-  const unread = mine.filter((n) => !n.read).length;
+  const unread = data?.unread ?? 0;
+  const items = data?.notifications ?? [];
 
   return (
     <DropdownMenu
       onOpenChange={(open) => {
-        if (!open && unread > 0) markNotificationsRead();
+        if (!open && unread > 0) markRead.mutate();
       }}
     >
       <DropdownMenuTrigger asChild>
@@ -52,13 +52,13 @@ export function NotificationsMenu() {
       <DropdownMenuContent align="end" className="w-80">
         <DropdownMenuLabel>Notifications</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {mine.length === 0 ? (
+        {items.length === 0 ? (
           <p className="px-2 py-6 text-center text-sm text-muted-foreground">
             Nothing yet.
           </p>
         ) : (
           <div className="max-h-80 overflow-y-auto">
-            {mine.map((n) => (
+            {items.map((n) => (
               <button
                 key={n.id}
                 onClick={() => {

@@ -1,9 +1,9 @@
 'use client';
 
-// Account workspace: company info, its contacts, and every deal made
-// through those contacts.
+// Account workspace — API-backed: company info, its people, and every deal
+// made through them, with edit/archive.
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { format } from 'date-fns';
@@ -15,8 +15,12 @@ import {
   MapPin,
   Pencil,
 } from 'lucide-react';
-import { useStore } from '@/lib/store';
-import { visibleUserIds } from '@/lib/rbac';
+import {
+  useAccount,
+  useStageConfig,
+  useUpdateAccount,
+} from '@/lib/api/crm-hooks';
+import { useMe } from '@/lib/api/hooks';
 import { hasCapability } from '@/lib/policy';
 import { cn, formatINR, initials } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -43,8 +47,11 @@ import { Label } from '@/components/ui/label';
 export default function AccountDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
-  const { state, currentUser, stages, updateAccount, archiveAccount } =
-    useStore();
+  const { data: me } = useMe();
+  const { data, isLoading, error } = useAccount(params.id);
+  const updateAccount = useUpdateAccount(params.id);
+  const stages = useStageConfig();
+
   const [editOpen, setEditOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [edit, setEdit] = useState({
@@ -54,19 +61,21 @@ export default function AccountDetailPage() {
     website: '',
   });
 
-  const account = state.accounts.find((a) => a.id === params.id);
+  if (!me) return null;
 
-  const visible = useMemo(
-    () =>
-      currentUser
-        ? visibleUserIds(state.users, currentUser)
-        : new Set<string>(),
-    [state.users, currentUser],
-  );
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <div className="h-12 animate-pulse rounded-lg bg-muted" />
+        <div className="grid gap-4 lg:grid-cols-[1fr,1.6fr]">
+          <div className="h-64 animate-pulse rounded-lg bg-muted" />
+          <div className="h-64 animate-pulse rounded-lg bg-muted" />
+        </div>
+      </div>
+    );
+  }
 
-  if (!currentUser) return null;
-
-  if (!account || !visible.has(account.ownerId) || account.archived) {
+  if (error || !data) {
     return (
       <div className="py-16 text-center">
         <p className="text-muted-foreground">
@@ -79,17 +88,7 @@ export default function AccountDetailPage() {
     );
   }
 
-  const contacts = state.contacts.filter(
-    (c) => c.accountId === account.id && !c.archived,
-  );
-  const contactIds = new Set(contacts.map((c) => c.id));
-  const deals = state.deals
-    .filter((d) => contactIds.has(d.contactId) && !d.archived)
-    .sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
-  const owner = state.users.find((u) => u.id === account.ownerId);
+  const { account, contacts, deals } = data;
   const openValue = deals
     .filter((d) => d.stage !== 'won' && d.stage !== 'lost')
     .reduce((s, d) => s + d.value, 0);
@@ -115,7 +114,7 @@ export default function AccountDetailPage() {
           <p className="text-sm text-muted-foreground">
             {[account.industry, account.city].filter(Boolean).join(' · ') ||
               'No details yet'}{' '}
-            · owned by {owner?.name ?? '—'}
+            · owned by {account.owner?.name ?? '—'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -135,7 +134,7 @@ export default function AccountDetailPage() {
           >
             <Pencil />
           </Button>
-          {hasCapability(currentUser.role, 'archive_records') && (
+          {hasCapability(me.role, 'archive_records') && (
             <Button
               variant="outline"
               size="icon"
@@ -160,92 +159,6 @@ export default function AccountDetailPage() {
           </div>
         </div>
       </div>
-
-      {/* Edit account */}
-      <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Edit account</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <Label>Company name</Label>
-              <Input
-                value={edit.name}
-                onChange={(e) => setEdit({ ...edit, name: e.target.value })}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Industry</Label>
-                <Input
-                  value={edit.industry}
-                  onChange={(e) =>
-                    setEdit({ ...edit, industry: e.target.value })
-                  }
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>City</Label>
-                <Input
-                  value={edit.city}
-                  onChange={(e) => setEdit({ ...edit, city: e.target.value })}
-                />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Website</Label>
-              <Input
-                value={edit.website}
-                onChange={(e) => setEdit({ ...edit, website: e.target.value })}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              disabled={!edit.name.trim()}
-              onClick={() => {
-                updateAccount(account.id, {
-                  name: edit.name.trim(),
-                  industry: edit.industry.trim(),
-                  city: edit.city.trim(),
-                  website: edit.website.trim(),
-                });
-                setEditOpen(false);
-              }}
-            >
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Archive confirm */}
-      <Dialog open={archiveOpen} onOpenChange={setArchiveOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Archive {account.name}?</DialogTitle>
-            <DialogDescription>
-              The account is hidden from lists; its contacts and deals keep
-              their history.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setArchiveOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                archiveAccount(account.id);
-                router.push('/accounts');
-              }}
-            >
-              Archive
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <div className="grid gap-4 lg:grid-cols-[1fr,1.6fr]">
         <div className="space-y-4">
@@ -291,7 +204,12 @@ export default function AccountDetailPage() {
                         <AvatarFallback>{initials(c.name)}</AvatarFallback>
                       </Avatar>
                       <div className="min-w-0">
-                        <p className="text-sm font-medium">{c.name}</p>
+                        <Link
+                          href={`/contacts/${c.id}`}
+                          className="text-sm font-medium underline-offset-4 hover:text-primary hover:underline"
+                        >
+                          {c.name}
+                        </Link>
                         <p className="truncate text-xs text-muted-foreground">
                           {[c.title, c.phone].filter(Boolean).join(' · ')}
                         </p>
@@ -354,6 +272,97 @@ export default function AccountDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Edit account */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit account</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>Company name</Label>
+              <Input
+                value={edit.name}
+                onChange={(e) => setEdit({ ...edit, name: e.target.value })}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Industry</Label>
+                <Input
+                  value={edit.industry}
+                  onChange={(e) =>
+                    setEdit({ ...edit, industry: e.target.value })
+                  }
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>City</Label>
+                <Input
+                  value={edit.city}
+                  onChange={(e) => setEdit({ ...edit, city: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Website</Label>
+              <Input
+                value={edit.website}
+                onChange={(e) => setEdit({ ...edit, website: e.target.value })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              disabled={!edit.name.trim() || updateAccount.isPending}
+              onClick={() =>
+                updateAccount.mutate(
+                  {
+                    name: edit.name.trim(),
+                    industry: edit.industry.trim(),
+                    city: edit.city.trim(),
+                    website: edit.website.trim(),
+                  },
+                  { onSuccess: () => setEditOpen(false) },
+                )
+              }
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Archive confirm */}
+      <Dialog open={archiveOpen} onOpenChange={setArchiveOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Archive {account.name}?</DialogTitle>
+            <DialogDescription>
+              The account is hidden from lists; its contacts and deals keep
+              their history.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setArchiveOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={updateAccount.isPending}
+              onClick={() =>
+                updateAccount.mutate(
+                  { archived: true },
+                  { onSuccess: () => router.push('/accounts') },
+                )
+              }
+            >
+              Archive
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

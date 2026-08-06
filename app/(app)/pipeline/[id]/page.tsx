@@ -1,9 +1,9 @@
 'use client';
 
-// Deal workspace: stage stepper, quotation-style product line items that
-// drive the deal value, and the activity timeline.
+// Deal workspace — API-backed: stage stepper, quotation line items driving
+// value, quote history with statuses, timeline, edit/archive.
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { format } from 'date-fns';
@@ -21,8 +21,16 @@ import {
   Trophy,
   X,
 } from 'lucide-react';
-import { useStore } from '@/lib/store';
-import { visibleUserIds } from '@/lib/rbac';
+import {
+  useCreateQuote,
+  useDeal,
+  useProducts,
+  useSetQuoteStatus,
+  useStageConfig,
+  useUpdateDeal,
+} from '@/lib/api/crm-hooks';
+import { useContact } from '@/lib/api/crm-hooks';
+import { useMe } from '@/lib/api/hooks';
 import { hasCapability } from '@/lib/policy';
 import { DealStage } from '@/lib/types';
 import { cn, formatINR, whatsappLink } from '@/lib/utils';
@@ -69,18 +77,14 @@ const OPEN_STAGES: DealStage[] = ['qualification', 'proposal', 'negotiation'];
 export default function DealDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
-  const {
-    state,
-    currentUser,
-    stages,
-    moveDealStage,
-    setDealLineItems,
-    setDealExpectedClose,
-    updateDealInfo,
-    archiveDeal,
-    createQuote,
-    setQuoteStatus,
-  } = useStore();
+  const { data: me } = useMe();
+  const { data, isLoading, error } = useDeal(params.id);
+  const stages = useStageConfig();
+  const { data: products } = useProducts();
+  const updateDeal = useUpdateDeal(params.id);
+  const createQuote = useCreateQuote(params.id);
+  const setQuoteStatus = useSetQuoteStatus(params.id);
+
   const [lostOpen, setLostOpen] = useState(false);
   const [lostReason, setLostReason] = useState('');
   const [productId, setProductId] = useState('');
@@ -90,19 +94,25 @@ export default function DealDetailPage() {
   const [editValue, setEditValue] = useState('');
   const [archiveOpen, setArchiveOpen] = useState(false);
 
-  const deal = state.deals.find((d) => d.id === params.id);
+  const contactId = data?.deal.contactId;
+  const { data: contactData } = useContact(contactId ?? '');
 
-  const visible = useMemo(
-    () =>
-      currentUser
-        ? visibleUserIds(state.users, currentUser)
-        : new Set<string>(),
-    [state.users, currentUser],
-  );
+  if (!me) return null;
 
-  if (!currentUser) return null;
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <div className="h-12 animate-pulse rounded-lg bg-muted" />
+        <div className="h-16 animate-pulse rounded-lg bg-muted" />
+        <div className="grid gap-4 lg:grid-cols-[1.6fr,1fr]">
+          <div className="h-64 animate-pulse rounded-lg bg-muted" />
+          <div className="h-64 animate-pulse rounded-lg bg-muted" />
+        </div>
+      </div>
+    );
+  }
 
-  if (!deal || !visible.has(deal.ownerId)) {
+  if (error || !data) {
     return (
       <div className="py-16 text-center">
         <p className="text-muted-foreground">
@@ -115,16 +125,19 @@ export default function DealDetailPage() {
     );
   }
 
-  const contact = state.contacts.find((c) => c.id === deal.contactId);
-  const owner = state.users.find((u) => u.id === deal.ownerId);
+  const { deal, quotes } = data;
+  const contact = contactData?.contact;
   const isClosed = deal.stage === 'won' || deal.stage === 'lost';
   const items = deal.lineItems ?? [];
-  const productById = new Map(state.products.map((p) => [p.id, p]));
   const itemsTotal = items.reduce((s, it) => s + it.qty * it.price, 0);
 
+  function move(stage: DealStage, reason?: string) {
+    updateDeal.mutate({ stage, lostReason: reason });
+  }
+
   function addItem() {
-    if (!deal || !productId) return;
-    const product = productById.get(productId);
+    if (!productId) return;
+    const product = (products ?? []).find((p) => p.id === productId);
     if (!product) return;
     const existing = items.find((it) => it.productId === productId);
     const next = existing
@@ -133,21 +146,24 @@ export default function DealDetailPage() {
             ? { ...it, qty: it.qty + (Number(qty) || 1) }
             : it,
         )
-      : [
-          ...items,
-          { productId, qty: Number(qty) || 1, price: product.price },
-        ];
-    setDealLineItems(deal.id, next);
+      : [...items, { productId, qty: Number(qty) || 1, price: product.price }];
+    updateDeal.mutate({
+      lineItems: next.map((it) => ({
+        productId: it.productId,
+        qty: it.qty,
+        price: it.price,
+      })),
+    });
     setProductId('');
     setQty('1');
   }
 
   function removeItem(pid: string) {
-    if (!deal) return;
-    setDealLineItems(
-      deal.id,
-      items.filter((it) => it.productId !== pid),
-    );
+    updateDeal.mutate({
+      lineItems: items
+        .filter((it) => it.productId !== pid)
+        .map((it) => ({ productId: it.productId, qty: it.qty, price: it.price })),
+    });
   }
 
   return (
@@ -177,9 +193,8 @@ export default function DealDetailPage() {
             )}
           </div>
           <p className="text-sm text-muted-foreground">
-            {contact?.name ?? 'Unknown contact'}
-            {contact?.company ? ` · ${contact.company}` : ''} · owned by{' '}
-            {owner?.name ?? '—'}
+            {deal.contact?.name ?? 'Unknown contact'} · owned by{' '}
+            {deal.owner?.name ?? '—'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -197,7 +212,7 @@ export default function DealDetailPage() {
               <Pencil />
             </Button>
           )}
-          {hasCapability(currentUser.role, 'archive_records') && (
+          {hasCapability(me.role, 'archive_records') && (
             <Button
               variant="outline"
               size="icon"
@@ -228,8 +243,8 @@ export default function DealDetailPage() {
               return (
                 <button
                   key={s}
-                  disabled={isClosed || isCurrent}
-                  onClick={() => moveDealStage(deal.id, s)}
+                  disabled={isClosed || isCurrent || updateDeal.isPending}
+                  onClick={() => move(s)}
                   className={cn(
                     'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors',
                     isCurrent
@@ -252,7 +267,8 @@ export default function DealDetailPage() {
                 <Button
                   size="sm"
                   className="bg-emerald-600 hover:bg-emerald-700"
-                  onClick={() => moveDealStage(deal.id, 'won')}
+                  disabled={updateDeal.isPending}
+                  onClick={() => move('won')}
                 >
                   <Trophy />
                   Order secured
@@ -261,6 +277,7 @@ export default function DealDetailPage() {
                   size="sm"
                   variant="outline"
                   className="text-destructive"
+                  disabled={updateDeal.isPending}
                   onClick={() => {
                     setLostReason('');
                     setLostOpen(true);
@@ -271,7 +288,8 @@ export default function DealDetailPage() {
               </>
             ) : (
               <p className="text-sm text-muted-foreground">
-                Closed {deal.closedAt && format(new Date(deal.closedAt), 'd MMM yyyy')}
+                Closed{' '}
+                {deal.closedAt && format(new Date(deal.closedAt), 'd MMM yyyy')}
                 {deal.stage === 'lost' && deal.lostReason
                   ? ` — ${deal.lostReason}`
                   : ''}
@@ -288,7 +306,9 @@ export default function DealDetailPage() {
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-lg">Products & quotation</CardTitle>
+                  <CardTitle className="text-lg">
+                    Products & quotation
+                  </CardTitle>
                   <CardDescription>
                     Line items drive the deal value automatically.
                   </CardDescription>
@@ -297,10 +317,12 @@ export default function DealDetailPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      const quoteId = createQuote(deal.id);
-                      if (quoteId) router.push(`/quote/${deal.id}`);
-                    }}
+                    disabled={createQuote.isPending}
+                    onClick={() =>
+                      createQuote.mutate(undefined, {
+                        onSuccess: () => router.push(`/quote/${deal.id}`),
+                      })
+                    }
                   >
                     <FileText />
                     Generate quotation
@@ -316,8 +338,8 @@ export default function DealDetailPage() {
                       <SelectValue placeholder="Add a product…" />
                     </SelectTrigger>
                     <SelectContent>
-                      {state.products
-                        .filter((p) => p.active !== false)
+                      {(products ?? [])
+                        .filter((p) => p.active)
                         .map((p) => (
                           <SelectItem key={p.id} value={p.id}>
                             {p.name} — {formatINR(p.price)}
@@ -333,7 +355,10 @@ export default function DealDetailPage() {
                     className="w-20"
                     aria-label="Quantity"
                   />
-                  <Button onClick={addItem} disabled={!productId}>
+                  <Button
+                    onClick={addItem}
+                    disabled={!productId || updateDeal.isPending}
+                  >
                     <Plus />
                     Add
                   </Button>
@@ -356,46 +381,42 @@ export default function DealDetailPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {items.map((it) => {
-                      const p = productById.get(it.productId);
-                      return (
-                        <TableRow key={it.productId}>
+                    {items.map((it) => (
+                      <TableRow key={it.productId}>
+                        <TableCell>
+                          <p className="font-medium">
+                            {it.productName ?? '—'}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {it.sku}
+                          </p>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {it.qty}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {formatINR(it.price)}
+                        </TableCell>
+                        <TableCell className="text-right font-medium tabular-nums">
+                          {formatINR(it.qty * it.price)}
+                        </TableCell>
+                        {!isClosed && (
                           <TableCell>
-                            <p className="font-medium">{p?.name ?? '—'}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {p?.sku} · {p?.category}
-                            </p>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                              onClick={() => removeItem(it.productId)}
+                              aria-label="Remove line"
+                            >
+                              <Trash2 />
+                            </Button>
                           </TableCell>
-                          <TableCell className="text-right tabular-nums">
-                            {it.qty}
-                          </TableCell>
-                          <TableCell className="text-right tabular-nums">
-                            {formatINR(it.price)}
-                          </TableCell>
-                          <TableCell className="text-right font-medium tabular-nums">
-                            {formatINR(it.qty * it.price)}
-                          </TableCell>
-                          {!isClosed && (
-                            <TableCell>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                                onClick={() => removeItem(it.productId)}
-                                aria-label="Remove line"
-                              >
-                                <Trash2 />
-                              </Button>
-                            </TableCell>
-                          )}
-                        </TableRow>
-                      );
-                    })}
+                        )}
+                      </TableRow>
+                    ))}
                     <TableRow>
-                      <TableCell
-                        colSpan={3}
-                        className="text-right font-medium"
-                      >
+                      <TableCell colSpan={3} className="text-right font-medium">
                         Total
                       </TableCell>
                       <TableCell className="text-right font-semibold tabular-nums">
@@ -473,19 +494,17 @@ export default function DealDetailPage() {
         </div>
 
         <div className="space-y-4">
-        {/* Quote history */}
-        {state.quotes.some((q) => q.dealId === deal.id) && (
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-lg">Quotations</CardTitle>
-              <CardDescription>
-                Generated quotes for this deal.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {state.quotes
-                .filter((q) => q.dealId === deal.id)
-                .map((q) => (
+          {/* Quote history */}
+          {quotes.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg">Quotations</CardTitle>
+                <CardDescription>
+                  Generated quotes for this deal.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {quotes.map((q) => (
                   <div
                     key={q.id}
                     className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5 text-sm"
@@ -505,7 +524,10 @@ export default function DealDetailPage() {
                     <Select
                       value={q.status}
                       onValueChange={(v) =>
-                        setQuoteStatus(q.id, v as typeof q.status)
+                        setQuoteStatus.mutate({
+                          quoteId: q.id,
+                          status: v as typeof q.status,
+                        })
                       }
                     >
                       <SelectTrigger className="h-8 w-[120px] text-xs">
@@ -519,61 +541,77 @@ export default function DealDetailPage() {
                     </Select>
                   </div>
                 ))}
-            </CardContent>
-          </Card>
-        )}
+              </CardContent>
+            </Card>
+          )}
 
-        <Card className="h-fit">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-lg">Details</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div>
-              <p className="text-xs text-muted-foreground">Contact</p>
-              <p className="font-medium">{contact?.name ?? '—'}</p>
-              <p className="text-xs text-muted-foreground">
-                {contact?.phone} {contact?.email && `· ${contact.email}`}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Owner</p>
-              <p className="font-medium">{owner?.name ?? '—'}</p>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
+          <Card className="h-fit">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg">Details</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
               <div>
-                <p className="text-xs text-muted-foreground">Created</p>
-                <p className="font-medium">
-                  {format(new Date(deal.createdAt), 'd MMM yyyy')}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">
-                  {isClosed ? 'Closed' : 'Expected close'}
-                </p>
-                {isClosed ? (
-                  <p className="font-medium">
-                    {format(
-                      new Date(deal.closedAt ?? deal.expectedClose),
-                      'd MMM yyyy',
-                    )}
-                  </p>
+                <p className="text-xs text-muted-foreground">Contact</p>
+                {deal.contact ? (
+                  <Link
+                    href={`/contacts/${deal.contact.id}`}
+                    className="font-medium underline-offset-4 hover:text-primary hover:underline"
+                  >
+                    {deal.contact.name}
+                  </Link>
                 ) : (
-                  <Input
-                    type="date"
-                    className="mt-1 h-8"
-                    value={format(new Date(deal.expectedClose), 'yyyy-MM-dd')}
-                    onChange={(e) => {
-                      if (!e.target.value) return;
-                      const d = new Date(e.target.value);
-                      d.setHours(18, 0, 0, 0);
-                      setDealExpectedClose(deal.id, d.toISOString());
-                    }}
-                  />
+                  <p className="font-medium">—</p>
+                )}
+                {contact && (
+                  <p className="text-xs text-muted-foreground">
+                    {contact.phone} {contact.email && `· ${contact.email}`}
+                  </p>
                 )}
               </div>
-            </div>
-          </CardContent>
-        </Card>
+              <div>
+                <p className="text-xs text-muted-foreground">Owner</p>
+                <p className="font-medium">{deal.owner?.name ?? '—'}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <p className="text-xs text-muted-foreground">Created</p>
+                  <p className="font-medium">
+                    {format(new Date(deal.createdAt), 'd MMM yyyy')}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">
+                    {isClosed ? 'Closed' : 'Expected close'}
+                  </p>
+                  {isClosed ? (
+                    <p className="font-medium">
+                      {format(
+                        new Date(deal.closedAt ?? deal.expectedClose),
+                        'd MMM yyyy',
+                      )}
+                    </p>
+                  ) : (
+                    <Input
+                      type="date"
+                      className="mt-1 h-8"
+                      value={format(
+                        new Date(deal.expectedClose),
+                        'yyyy-MM-dd',
+                      )}
+                      onChange={(e) => {
+                        if (!e.target.value) return;
+                        const d = new Date(e.target.value);
+                        d.setHours(18, 0, 0, 0);
+                        updateDeal.mutate({
+                          expectedClose: d.toISOString(),
+                        });
+                      }}
+                    />
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
@@ -612,14 +650,13 @@ export default function DealDetailPage() {
           </div>
           <DialogFooter>
             <Button
-              disabled={!editTitle.trim()}
-              onClick={() => {
-                updateDealInfo(deal.id, {
-                  title: editTitle.trim(),
-                  value: Number(editValue) || 0,
-                });
-                setEditOpen(false);
-              }}
+              disabled={!editTitle.trim() || updateDeal.isPending}
+              onClick={() =>
+                updateDeal.mutate(
+                  { title: editTitle.trim(), value: Number(editValue) || 0 },
+                  { onSuccess: () => setEditOpen(false) },
+                )
+              }
             >
               Save
             </Button>
@@ -643,10 +680,13 @@ export default function DealDetailPage() {
             </Button>
             <Button
               variant="destructive"
-              onClick={() => {
-                archiveDeal(deal.id);
-                router.push('/pipeline');
-              }}
+              disabled={updateDeal.isPending}
+              onClick={() =>
+                updateDeal.mutate(
+                  { archived: true },
+                  { onSuccess: () => router.push('/pipeline') },
+                )
+              }
             >
               Archive
             </Button>
@@ -654,6 +694,7 @@ export default function DealDetailPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Lost-reason dialog */}
       <Dialog open={lostOpen} onOpenChange={setLostOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -678,7 +719,7 @@ export default function DealDetailPage() {
             <Button
               variant="destructive"
               onClick={() => {
-                moveDealStage(deal.id, 'lost', lostReason || undefined);
+                move('lost', lostReason || undefined);
                 setLostOpen(false);
               }}
             >

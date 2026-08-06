@@ -3,9 +3,14 @@
 // Authenticated app chrome: sidebar navigation + topbar. Client-side auth
 // guard — redirects to /login when no user is selected.
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import {
+  outboxCount,
+  useActivities,
+  useOutboxFlusher,
+} from '@/lib/api/hooks';
 import {
   BarChart3,
   Briefcase,
@@ -84,11 +89,27 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { hydrated, currentUser, online, state, logout, resetDemo } =
-    useStore();
+  const { hydrated, currentUser, online, logout, resetDemo } = useStore();
   const pathname = usePathname();
   const router = useRouter();
   const { theme, setTheme } = useTheme();
+  const { data: myActivities } = useActivities({ scope: 'mine' });
+  const flushOutbox = useOutboxFlusher();
+  const [outboxQueued, setOutboxQueued] = useState(0);
+
+  // Offline outbox: surface queued count app-wide, flush on reconnect.
+  useEffect(() => {
+    setOutboxQueued(outboxCount());
+    const onOnline = () =>
+      flushOutbox().then(() => setOutboxQueued(outboxCount()));
+    const interval = setInterval(() => setOutboxQueued(outboxCount()), 5000);
+    window.addEventListener('online', onOnline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (hydrated && !currentUser) {
@@ -104,14 +125,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const pendingCount = state.leads.filter((l) => l.pendingSync).length;
+  const pendingCount = outboxQueued;
 
   // Follow-ups needing attention today — surfaces on the My Day nav item
   // so a rep sees their workload from anywhere in the app.
   const now = new Date();
-  const dueCount = state.salesActivities.filter(
+  const dueCount = (myActivities ?? []).filter(
     (a) =>
-      a.ownerId === currentUser.id &&
       a.kind !== 'note' &&
       !a.completedAt &&
       a.dueAt &&

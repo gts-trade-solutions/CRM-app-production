@@ -1,10 +1,14 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+// Contacts list — API-backed with server pagination and search.
+
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import {
   Briefcase,
+  ChevronLeft,
+  ChevronRight,
   MessageCircle,
   MoreHorizontal,
   Plus,
@@ -13,12 +17,16 @@ import {
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { useStore } from '@/lib/store';
-import { assignableUsers, visibleUserIds } from '@/lib/rbac';
-import { Contact } from '@/lib/types';
-import { formatINR, initials, whatsappLink } from '@/lib/utils';
+import {
+  WireContact,
+  useAccounts,
+  useContacts,
+  useCreateContact,
+  useCreateDeal,
+} from '@/lib/api/crm-hooks';
+import { useApiUsers, useMe } from '@/lib/api/hooks';
+import { initials, whatsappLink } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -60,19 +68,36 @@ const contactSchema = z.object({
   title: z.string().default(''),
   phone: z.string().min(6, 'Phone is required'),
   email: z.string().email('Invalid email').or(z.literal('')),
-  ownerId: z.string().min(1, 'Pick an owner'),
+  ownerId: z.string().optional(),
 });
 
 type ContactFormValues = z.infer<typeof contactSchema>;
 
 export default function ContactsPage() {
-  const { state, currentUser, addContact, addDealForContact } = useStore();
+  const { data: me } = useMe();
+  const { data: users } = useApiUsers();
+  const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
   const [open, setOpen] = useState(false);
   const [accountId, setAccountId] = useState<string>('none');
-  const [dealFor, setDealFor] = useState<Contact | null>(null);
+  const [dealFor, setDealFor] = useState<WireContact | null>(null);
   const [dealTitle, setDealTitle] = useState('');
   const [dealValue, setDealValue] = useState('');
+
+  const createContact = useCreateContact();
+  const createDeal = useCreateDeal();
+  const { data: accountsPage } = useAccounts({ page: 1 });
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedQ(search.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const { data, isLoading } = useContacts({ page, q: debouncedQ });
 
   const {
     register,
@@ -89,83 +114,41 @@ export default function ContactsPage() {
       title: '',
       phone: '',
       email: '',
-      ownerId: currentUser?.id ?? '',
+      ownerId: '',
     },
   });
 
-  const visible = useMemo(
-    () =>
-      currentUser
-        ? visibleUserIds(state.users, currentUser)
-        : new Set<string>(),
-    [state.users, currentUser],
-  );
-
-  const userById = useMemo(
-    () => new Map(state.users.map((u) => [u.id, u])),
-    [state.users],
-  );
-
-  const accountById = useMemo(
-    () => new Map(state.accounts.map((a) => [a.id, a])),
-    [state.accounts],
-  );
-
-  const contacts = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return state.contacts
-      .filter((c) => visible.has(c.ownerId) && !c.archived)
-      .filter(
-        (c) =>
-          !q ||
-          c.name.toLowerCase().includes(q) ||
-          c.company.toLowerCase().includes(q) ||
-          c.email.toLowerCase().includes(q),
-      )
-      .sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      );
-  }, [state.contacts, visible, search]);
-
-  const dealsByContact = useMemo(() => {
-    const map = new Map<string, { count: number; value: number }>();
-    for (const d of state.deals) {
-      const entry = map.get(d.contactId) ?? { count: 0, value: 0 };
-      entry.count += 1;
-      if (d.stage !== 'lost') entry.value += d.value;
-      map.set(d.contactId, entry);
-    }
-    return map;
-  }, [state.deals]);
-
-  if (!currentUser) return null;
-  const owners = assignableUsers(state.users, currentUser);
+  if (!me) return null;
+  const owners = (users ?? []).filter((u) => u.active);
+  const totalPages = data
+    ? Math.max(1, Math.ceil(data.total / data.pageSize))
+    : 1;
 
   function onSubmit(values: ContactFormValues) {
-    addContact({
-      ...values,
-      accountId: accountId !== 'none' ? accountId : undefined,
-    });
-    reset();
-    setAccountId('none');
-    setOpen(false);
+    createContact.mutate(
+      {
+        ...values,
+        ownerId: values.ownerId || me!.id,
+        accountId: accountId !== 'none' ? accountId : undefined,
+      },
+      {
+        onSuccess: () => {
+          reset();
+          setAccountId('none');
+          setOpen(false);
+        },
+      },
+    );
   }
 
-  function openDealDialog(contact: Contact) {
+  function openDealDialog(contact: WireContact) {
     setDealFor(contact);
     setDealTitle(
-      contact.company
-        ? `${contact.company} — New opportunity`
+      contact.account?.name || contact.company
+        ? `${contact.account?.name ?? contact.company} — New opportunity`
         : `${contact.name} — New opportunity`,
     );
     setDealValue('');
-  }
-
-  function handleCreateDeal() {
-    if (!dealFor) return;
-    addDealForContact(dealFor.id, dealTitle, Number(dealValue) || 0);
-    setDealFor(null);
   }
 
   return (
@@ -210,13 +193,11 @@ export default function ContactsPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="none">No account</SelectItem>
-                      {state.accounts
-                        .filter((a) => visible.has(a.ownerId))
-                        .map((a) => (
-                          <SelectItem key={a.id} value={a.id}>
-                            {a.name}
-                          </SelectItem>
-                        ))}
+                      {(accountsPage?.accounts ?? []).map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.name}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -253,12 +234,10 @@ export default function ContactsPage() {
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Owner *</Label>
+                  <Label>Owner</Label>
                   <Select
-                    value={watch('ownerId')}
-                    onValueChange={(v) =>
-                      setValue('ownerId', v, { shouldValidate: true })
-                    }
+                    value={watch('ownerId') || me.id}
+                    onValueChange={(v) => setValue('ownerId', v)}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Assign to" />
@@ -274,7 +253,9 @@ export default function ContactsPage() {
                 </div>
               </div>
               <DialogFooter>
-                <Button type="submit">Create contact</Button>
+                <Button type="submit" disabled={createContact.isPending}>
+                  Create contact
+                </Button>
               </DialogFooter>
             </form>
           </DialogContent>
@@ -299,19 +280,23 @@ export default function ContactsPage() {
                 <TableHead>Contact</TableHead>
                 <TableHead className="hidden md:table-cell">Phone</TableHead>
                 <TableHead className="hidden lg:table-cell">Owner</TableHead>
-                <TableHead>Deals</TableHead>
-                <TableHead className="hidden sm:table-cell">
-                  Open + won value
-                </TableHead>
                 <TableHead className="hidden lg:table-cell">Added</TableHead>
                 <TableHead className="w-10" />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {contacts.length === 0 && (
+              {isLoading &&
+                [0, 1, 2].map((i) => (
+                  <TableRow key={`s-${i}`}>
+                    <TableCell colSpan={5}>
+                      <div className="h-9 animate-pulse rounded bg-muted" />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              {!isLoading && (data?.contacts ?? []).length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={7}
+                    colSpan={5}
                     className="py-10 text-center text-muted-foreground"
                   >
                     No contacts yet. Convert a qualified lead or add one
@@ -319,105 +304,117 @@ export default function ContactsPage() {
                   </TableCell>
                 </TableRow>
               )}
-              {contacts.map((contact) => {
-                const owner = userById.get(contact.ownerId);
-                const deals = dealsByContact.get(contact.id);
-                const account = contact.accountId
-                  ? accountById.get(contact.accountId)
-                  : undefined;
-                return (
-                  <TableRow key={contact.id}>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <Avatar className="h-9 w-9">
-                          <AvatarFallback>
-                            {initials(contact.name)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div>
-                          <Link
-                            href={`/contacts/${contact.id}`}
-                            className="font-medium underline-offset-4 hover:text-primary hover:underline"
-                          >
-                            {contact.name}
-                          </Link>
-                          <p className="text-xs text-muted-foreground">
-                            {contact.title && `${contact.title} · `}
-                            {account ? (
-                              <Link
-                                href={`/accounts/${account.id}`}
-                                className="underline-offset-4 hover:text-primary hover:underline"
-                              >
-                                {account.name}
-                              </Link>
-                            ) : (
-                              contact.company || contact.email
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell className="hidden text-sm md:table-cell">
-                      <a
-                        href={`tel:${contact.phone.replace(/\s/g, '')}`}
-                        className="underline-offset-4 hover:text-primary hover:underline"
-                      >
-                        {contact.phone}
-                      </a>
-                    </TableCell>
-                    <TableCell className="hidden text-sm lg:table-cell">
-                      {owner?.name ?? '—'}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">{deals?.count ?? 0}</Badge>
-                    </TableCell>
-                    <TableCell className="hidden text-sm sm:table-cell">
-                      {deals?.value ? formatINR(deals.value) : '—'}
-                    </TableCell>
-                    <TableCell className="hidden text-sm text-muted-foreground lg:table-cell">
-                      {format(new Date(contact.createdAt), 'd MMM yyyy')}
-                    </TableCell>
-                    <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                          >
-                            <MoreHorizontal />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() => openDealDialog(contact)}
-                          >
-                            <Briefcase />
-                            Create deal
-                          </DropdownMenuItem>
-                          <DropdownMenuItem asChild>
-                            <a
-                              href={whatsappLink(
-                                contact.phone,
-                                `Hi ${contact.name.split(' ')[0]},`,
-                              )}
-                              target="_blank"
-                              rel="noreferrer"
+              {(data?.contacts ?? []).map((contact) => (
+                <TableRow key={contact.id}>
+                  <TableCell>
+                    <div className="flex items-center gap-3">
+                      <Avatar className="h-9 w-9">
+                        <AvatarFallback>
+                          {initials(contact.name)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <Link
+                          href={`/contacts/${contact.id}`}
+                          className="font-medium underline-offset-4 hover:text-primary hover:underline"
+                        >
+                          {contact.name}
+                        </Link>
+                        <p className="text-xs text-muted-foreground">
+                          {contact.title && `${contact.title} · `}
+                          {contact.account ? (
+                            <Link
+                              href={`/accounts/${contact.account.id}`}
+                              className="underline-offset-4 hover:text-primary hover:underline"
                             >
-                              <MessageCircle className="text-green-600" />
-                              WhatsApp
-                            </a>
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
+                              {contact.account.name}
+                            </Link>
+                          ) : (
+                            contact.company || contact.email
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                  </TableCell>
+                  <TableCell className="hidden text-sm md:table-cell">
+                    <a
+                      href={`tel:${contact.phone.replace(/\s/g, '')}`}
+                      className="underline-offset-4 hover:text-primary hover:underline"
+                    >
+                      {contact.phone}
+                    </a>
+                  </TableCell>
+                  <TableCell className="hidden text-sm lg:table-cell">
+                    {contact.owner?.name ?? '—'}
+                  </TableCell>
+                  <TableCell className="hidden text-sm text-muted-foreground lg:table-cell">
+                    {format(new Date(contact.createdAt), 'd MMM yyyy')}
+                  </TableCell>
+                  <TableCell>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8">
+                          <MoreHorizontal />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={() => openDealDialog(contact)}
+                        >
+                          <Briefcase />
+                          Create deal
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <a
+                            href={whatsappLink(
+                              contact.phone,
+                              `Hi ${contact.name.split(' ')[0]},`,
+                            )}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <MessageCircle className="text-green-600" />
+                            WhatsApp
+                          </a>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))}
             </TableBody>
           </Table>
         </CardContent>
       </Card>
+
+      <div className="flex items-center justify-between text-sm text-muted-foreground">
+        <span>
+          {data ? `${data.total} contact${data.total === 1 ? '' : 's'}` : ''}
+        </span>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page <= 1}
+            onClick={() => setPage((p) => p - 1)}
+          >
+            <ChevronLeft />
+            Prev
+          </Button>
+          <span className="tabular-nums">
+            {page} / {totalPages}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page >= totalPages}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next
+            <ChevronRight />
+          </Button>
+        </div>
+      </div>
 
       <Dialog open={!!dealFor} onOpenChange={(o) => !o && setDealFor(null)}>
         <DialogContent className="sm:max-w-md">
@@ -449,7 +446,20 @@ export default function ContactsPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button onClick={handleCreateDeal} disabled={!dealTitle.trim()}>
+            <Button
+              disabled={!dealTitle.trim() || createDeal.isPending}
+              onClick={() => {
+                if (!dealFor) return;
+                createDeal.mutate(
+                  {
+                    contactId: dealFor.id,
+                    title: dealTitle,
+                    value: Number(dealValue) || 0,
+                  },
+                  { onSuccess: () => setDealFor(null) },
+                );
+              }}
+            >
               Create deal
             </Button>
           </DialogFooter>

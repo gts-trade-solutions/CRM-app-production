@@ -1,10 +1,8 @@
 'use client';
 
-// Contact workspace: the person's profile, their account, their deals and
-// the activity timeline — the page search results and notifications
-// deep-link to.
+// Contact workspace — API-backed: profile, account link, deals, timeline.
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { format } from 'date-fns';
@@ -18,8 +16,12 @@ import {
   Pencil,
   Phone,
 } from 'lucide-react';
-import { useStore } from '@/lib/store';
-import { visibleUserIds } from '@/lib/rbac';
+import {
+  useContact,
+  useStageConfig,
+  useUpdateContact,
+} from '@/lib/api/crm-hooks';
+import { useMe } from '@/lib/api/hooks';
 import { hasCapability } from '@/lib/policy';
 import { cn, formatINR, initials, whatsappLink } from '@/lib/utils';
 import { ActivityDialog } from '@/components/activities/activity-dialog';
@@ -48,8 +50,11 @@ import { Label } from '@/components/ui/label';
 
 export default function ContactDetailPage() {
   const params = useParams<{ id: string }>();
-  const { state, currentUser, updateContact, archiveContact, stages } =
-    useStore();
+  const { data: me } = useMe();
+  const { data, isLoading, error } = useContact(params.id);
+  const updateContact = useUpdateContact(params.id);
+  const stages = useStageConfig();
+
   const [editOpen, setEditOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [edit, setEdit] = useState({
@@ -59,19 +64,21 @@ export default function ContactDetailPage() {
     email: '',
   });
 
-  const contact = state.contacts.find((c) => c.id === params.id);
+  if (!me) return null;
 
-  const visible = useMemo(
-    () =>
-      currentUser
-        ? visibleUserIds(state.users, currentUser)
-        : new Set<string>(),
-    [state.users, currentUser],
-  );
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <div className="h-12 animate-pulse rounded-lg bg-muted" />
+        <div className="grid gap-4 lg:grid-cols-[1fr,1.6fr]">
+          <div className="h-64 animate-pulse rounded-lg bg-muted" />
+          <div className="h-64 animate-pulse rounded-lg bg-muted" />
+        </div>
+      </div>
+    );
+  }
 
-  if (!currentUser) return null;
-
-  if (!contact || !visible.has(contact.ownerId) || contact.archived) {
+  if (error || !data) {
     return (
       <div className="py-16 text-center">
         <p className="text-muted-foreground">
@@ -85,17 +92,8 @@ export default function ContactDetailPage() {
     );
   }
 
-  const account = contact.accountId
-    ? state.accounts.find((a) => a.id === contact.accountId)
-    : undefined;
-  const owner = state.users.find((u) => u.id === contact.ownerId);
-  const deals = state.deals
-    .filter((d) => d.contactId === contact.id && !d.archived)
-    .sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
-  const canArchive = hasCapability(currentUser.role, 'archive_records');
+  const { contact, deals } = data;
+  const canArchive = hasCapability(me.role, 'archive_records');
 
   return (
     <div className="space-y-4">
@@ -113,10 +111,10 @@ export default function ContactDetailPage() {
             {contact.name}
           </h1>
           <p className="text-sm text-muted-foreground">
-            {[contact.title, account?.name ?? contact.company]
+            {[contact.title, contact.account?.name ?? contact.company]
               .filter(Boolean)
               .join(' · ') || 'No details'}{' '}
-            · owned by {owner?.name ?? '—'}
+            · owned by {contact.owner?.name ?? '—'}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -228,12 +226,12 @@ export default function ContactDetailPage() {
               </div>
               <div className="flex items-center gap-3">
                 <Briefcase className="h-4 w-4 text-muted-foreground" />
-                {account ? (
+                {contact.account ? (
                   <Link
-                    href={`/accounts/${account.id}`}
+                    href={`/accounts/${contact.account.id}`}
                     className="underline-offset-4 hover:text-primary hover:underline"
                   >
-                    {account.name}
+                    {contact.account.name}
                   </Link>
                 ) : (
                   contact.company || '—'
@@ -348,16 +346,22 @@ export default function ContactDetailPage() {
           </div>
           <DialogFooter>
             <Button
-              disabled={!edit.name.trim() || !edit.phone.trim()}
-              onClick={() => {
-                updateContact(contact.id, {
-                  name: edit.name.trim(),
-                  title: edit.title.trim(),
-                  phone: edit.phone.trim(),
-                  email: edit.email.trim(),
-                });
-                setEditOpen(false);
-              }}
+              disabled={
+                !edit.name.trim() ||
+                !edit.phone.trim() ||
+                updateContact.isPending
+              }
+              onClick={() =>
+                updateContact.mutate(
+                  {
+                    name: edit.name.trim(),
+                    title: edit.title.trim(),
+                    phone: edit.phone.trim(),
+                    email: edit.email.trim(),
+                  },
+                  { onSuccess: () => setEditOpen(false) },
+                )
+              }
             >
               Save
             </Button>
@@ -381,7 +385,8 @@ export default function ContactDetailPage() {
             </Button>
             <Button
               variant="destructive"
-              onClick={() => archiveContact(contact.id)}
+              disabled={updateContact.isPending}
+              onClick={() => updateContact.mutate({ archived: true })}
             >
               Archive
             </Button>

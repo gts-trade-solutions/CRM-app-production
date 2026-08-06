@@ -1,16 +1,22 @@
 'use client';
 
-// Accounts: companies as first-class records. Contacts link to accounts,
-// and deals roll up through their contact's account.
+// Accounts list — API-backed; rollups (contacts, open/secured value) are
+// computed in SQL on the server.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Building2, Plus, Search } from 'lucide-react';
+import {
+  Building2,
+  ChevronLeft,
+  ChevronRight,
+  Plus,
+  Search,
+} from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { useStore } from '@/lib/store';
-import { assignableUsers, visibleUserIds } from '@/lib/rbac';
+import { useAccounts, useCreateAccount } from '@/lib/api/crm-hooks';
+import { useApiUsers, useMe } from '@/lib/api/hooks';
 import { formatINR } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -47,15 +53,29 @@ const accountSchema = z.object({
   industry: z.string().default(''),
   city: z.string().default(''),
   website: z.string().default(''),
-  ownerId: z.string().min(1, 'Pick an owner'),
+  ownerId: z.string().optional(),
 });
 
 type AccountFormValues = z.infer<typeof accountSchema>;
 
 export default function AccountsPage() {
-  const { state, currentUser, addAccount } = useStore();
+  const { data: me } = useMe();
+  const { data: users } = useApiUsers();
+  const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
   const [open, setOpen] = useState(false);
+  const createAccount = useCreateAccount();
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedQ(search.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const { data, isLoading } = useAccounts({ page, q: debouncedQ });
 
   const {
     register,
@@ -66,72 +86,25 @@ export default function AccountsPage() {
     formState: { errors },
   } = useForm<AccountFormValues>({
     resolver: zodResolver(accountSchema),
-    defaultValues: {
-      name: '',
-      industry: '',
-      city: '',
-      website: '',
-      ownerId: currentUser?.id ?? '',
-    },
+    defaultValues: { name: '', industry: '', city: '', website: '', ownerId: '' },
   });
 
-  const visible = useMemo(
-    () =>
-      currentUser
-        ? visibleUserIds(state.users, currentUser)
-        : new Set<string>(),
-    [state.users, currentUser],
-  );
-
-  const rollups = useMemo(() => {
-    const contactsByAccount = new Map<string, number>();
-    const accountByContact = new Map<string, string>();
-    for (const c of state.contacts) {
-      if (!c.accountId) continue;
-      contactsByAccount.set(
-        c.accountId,
-        (contactsByAccount.get(c.accountId) ?? 0) + 1,
-      );
-      accountByContact.set(c.id, c.accountId);
-    }
-    const dealStats = new Map<string, { open: number; won: number }>();
-    for (const d of state.deals) {
-      const accountId = accountByContact.get(d.contactId);
-      if (!accountId) continue;
-      const entry = dealStats.get(accountId) ?? { open: 0, won: 0 };
-      if (d.stage === 'won') entry.won += d.value;
-      else if (d.stage !== 'lost') entry.open += d.value;
-      dealStats.set(accountId, entry);
-    }
-    return { contactsByAccount, dealStats };
-  }, [state.contacts, state.deals]);
-
-  const accounts = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return state.accounts
-      .filter((a) => visible.has(a.ownerId) && !a.archived)
-      .filter(
-        (a) =>
-          !q ||
-          a.name.toLowerCase().includes(q) ||
-          a.industry.toLowerCase().includes(q) ||
-          a.city.toLowerCase().includes(q),
-      )
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [state.accounts, visible, search]);
-
-  const userById = useMemo(
-    () => new Map(state.users.map((u) => [u.id, u])),
-    [state.users],
-  );
-
-  if (!currentUser) return null;
-  const owners = assignableUsers(state.users, currentUser);
+  if (!me) return null;
+  const owners = (users ?? []).filter((u) => u.active);
+  const totalPages = data
+    ? Math.max(1, Math.ceil(data.total / data.pageSize))
+    : 1;
 
   function onSubmit(values: AccountFormValues) {
-    addAccount(values);
-    reset();
-    setOpen(false);
+    createAccount.mutate(
+      { ...values, ownerId: values.ownerId || me!.id },
+      {
+        onSuccess: () => {
+          reset();
+          setOpen(false);
+        },
+      },
+    );
   }
 
   return (
@@ -184,12 +157,10 @@ export default function AccountsPage() {
                   <Input id="ac-website" {...register('website')} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Owner *</Label>
+                  <Label>Owner</Label>
                   <Select
-                    value={watch('ownerId')}
-                    onValueChange={(v) =>
-                      setValue('ownerId', v, { shouldValidate: true })
-                    }
+                    value={watch('ownerId') || me.id}
+                    onValueChange={(v) => setValue('ownerId', v)}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Assign to" />
@@ -205,7 +176,9 @@ export default function AccountsPage() {
                 </div>
               </div>
               <DialogFooter>
-                <Button type="submit">Create account</Button>
+                <Button type="submit" disabled={createAccount.isPending}>
+                  Create account
+                </Button>
               </DialogFooter>
             </form>
           </DialogContent>
@@ -234,11 +207,19 @@ export default function AccountsPage() {
                 <TableHead className="hidden sm:table-cell">
                   Open pipeline
                 </TableHead>
-                <TableHead className="hidden sm:table-cell">Won</TableHead>
+                <TableHead className="hidden sm:table-cell">Secured</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {accounts.length === 0 && (
+              {isLoading &&
+                [0, 1, 2].map((i) => (
+                  <TableRow key={`s-${i}`}>
+                    <TableCell colSpan={6}>
+                      <div className="h-9 animate-pulse rounded bg-muted" />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              {!isLoading && (data?.accounts ?? []).length === 0 && (
                 <TableRow>
                   <TableCell
                     colSpan={6}
@@ -248,52 +229,80 @@ export default function AccountsPage() {
                   </TableCell>
                 </TableRow>
               )}
-              {accounts.map((account) => {
-                const stats = rollups.dealStats.get(account.id);
-                return (
-                  <TableRow key={account.id}>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                          <Building2 className="h-4 w-4" />
-                        </div>
-                        <div>
-                          <Link
-                            href={`/accounts/${account.id}`}
-                            className="font-medium underline-offset-4 hover:text-primary hover:underline"
-                          >
-                            {account.name}
-                          </Link>
-                          <p className="text-xs text-muted-foreground">
-                            {account.industry || '—'}
-                          </p>
-                        </div>
+              {(data?.accounts ?? []).map((account) => (
+                <TableRow key={account.id}>
+                  <TableCell>
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                        <Building2 className="h-4 w-4" />
                       </div>
-                    </TableCell>
-                    <TableCell className="hidden text-sm md:table-cell">
-                      {account.city || '—'}
-                    </TableCell>
-                    <TableCell className="hidden text-sm lg:table-cell">
-                      {userById.get(account.ownerId)?.name ?? '—'}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">
-                        {rollups.contactsByAccount.get(account.id) ?? 0}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="hidden text-sm sm:table-cell">
-                      {stats?.open ? formatINR(stats.open) : '—'}
-                    </TableCell>
-                    <TableCell className="hidden text-sm sm:table-cell">
-                      {stats?.won ? formatINR(stats.won) : '—'}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
+                      <div>
+                        <Link
+                          href={`/accounts/${account.id}`}
+                          className="font-medium underline-offset-4 hover:text-primary hover:underline"
+                        >
+                          {account.name}
+                        </Link>
+                        <p className="text-xs text-muted-foreground">
+                          {account.industry || '—'}
+                        </p>
+                      </div>
+                    </div>
+                  </TableCell>
+                  <TableCell className="hidden text-sm md:table-cell">
+                    {account.city || '—'}
+                  </TableCell>
+                  <TableCell className="hidden text-sm lg:table-cell">
+                    {account.owner?.name ?? '—'}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="secondary">
+                      {account.contactCount ?? 0}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="hidden text-sm sm:table-cell">
+                    {account.openValue ? formatINR(account.openValue) : '—'}
+                  </TableCell>
+                  <TableCell className="hidden text-sm sm:table-cell">
+                    {account.securedValue
+                      ? formatINR(account.securedValue)
+                      : '—'}
+                  </TableCell>
+                </TableRow>
+              ))}
             </TableBody>
           </Table>
         </CardContent>
       </Card>
+
+      <div className="flex items-center justify-between text-sm text-muted-foreground">
+        <span>
+          {data ? `${data.total} account${data.total === 1 ? '' : 's'}` : ''}
+        </span>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page <= 1}
+            onClick={() => setPage((p) => p - 1)}
+          >
+            <ChevronLeft />
+            Prev
+          </Button>
+          <span className="tabular-nums">
+            {page} / {totalPages}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page >= totalPages}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next
+            <ChevronRight />
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
