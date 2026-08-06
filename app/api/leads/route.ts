@@ -129,6 +129,8 @@ const createLeadSchema = z.object({
   idempotencyKey: z.string().max(64).optional(),
   /** True when the client queued this while offline (badge in UI). */
   capturedOffline: z.boolean().optional(),
+  /** DPDP: the data principal consented to being contacted. */
+  consent: z.boolean().optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -189,6 +191,7 @@ export async function POST(req: NextRequest) {
       notes: input.notes,
       campaignId: input.campaignId ?? null,
       idempotencyKey: input.idempotencyKey ?? null,
+      consentAt: input.consent ? new Date() : null,
       pendingSync: false,
       attachments: input.attachments?.length
         ? {

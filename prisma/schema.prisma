@@ -133,6 +133,10 @@ model Lead {
   pendingSync    Boolean    @default(false)
   /** Offline-capture dedupe: same key returns the existing lead. */
   idempotencyKey String?    @unique
+  /** DPDP: when the data principal consented to being contacted. */
+  consentAt      DateTime?
+  /** DPDP: set when PII was erased on request (record anonymized). */
+  erasedAt       DateTime?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
@@ -192,6 +196,8 @@ model Contact {
   accountId String?
   account   Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
   archived  Boolean  @default(false)
+  /** DPDP: set when PII was erased on request (record anonymized). */
+  erasedAt  DateTime?
   createdAt DateTime @default(now())
   deals     Deal[]
 

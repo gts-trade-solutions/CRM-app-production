@@ -16,6 +16,8 @@ export interface CreateLeadInput {
   notes: string;
   campaignId?: string;
   attachments?: Pick<LeadAttachment, 'name' | 'size' | 'type' | 'dataUrl'>[];
+  /** DPDP consent flag — the server stamps consentAt. */
+  consent?: boolean;
 }
 
 const OUTBOX_KEY = 'sf-lead-outbox-v1';

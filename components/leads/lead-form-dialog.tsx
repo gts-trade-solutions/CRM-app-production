@@ -62,6 +62,7 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const [campaignId, setCampaignId] = useState<string>('none');
   const [files, setFiles] = useState<File[]>([]);
+  const [consent, setConsent] = useState(false);
   const online = typeof navigator === 'undefined' ? true : navigator.onLine;
 
   const {
@@ -115,12 +116,14 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
           type: a.type,
           dataUrl: a.dataUrl,
         })),
+        consent,
       },
       {
         onSuccess: () => {
           reset();
           setCampaignId('none');
           setFiles([]);
+          setConsent(false);
           setOpen(false);
         },
       },
@@ -323,6 +326,20 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
               </ul>
             )}
           </div>
+
+          {/* DPDP consent capture */}
+          <label className="flex cursor-pointer items-start gap-2 rounded-md border p-2.5 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 accent-primary"
+              checked={consent}
+              onChange={(e) => setConsent(e.target.checked)}
+            />
+            <span className="text-muted-foreground">
+              The customer consented to being contacted about products and
+              offers (recorded with a timestamp).
+            </span>
+          </label>
 
           <DialogFooter>
             <Button

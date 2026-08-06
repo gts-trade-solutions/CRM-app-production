@@ -27,6 +27,7 @@ import { cn, formatINR, initials, whatsappLink } from '@/lib/utils';
 import { ActivityDialog } from '@/components/activities/activity-dialog';
 import { ActivityTimeline } from '@/components/activities/activity-timeline';
 import { EmailDialog } from '@/components/email-dialog';
+import { PrivacyMenu } from '@/components/privacy-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -118,6 +119,7 @@ export default function ContactDetailPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <PrivacyMenu type="contact" id={contact.id} name={contact.name} />
           <Button
             variant="outline"
             size="icon"

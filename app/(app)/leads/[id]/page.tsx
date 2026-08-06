@@ -48,6 +48,7 @@ import { leadScore, scoreTier } from '@/lib/scoring';
 import { ActivityDialog } from '@/components/activities/activity-dialog';
 import { ActivityTimeline } from '@/components/activities/activity-timeline';
 import { EmailDialog } from '@/components/email-dialog';
+import { PrivacyMenu } from '@/components/privacy-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -216,6 +217,7 @@ export default function LeadDetailPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <PrivacyMenu type="lead" id={lead.id} name={lead.name} />
           <Button
             variant="outline"
             size="icon"
