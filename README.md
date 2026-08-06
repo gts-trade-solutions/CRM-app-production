@@ -1,102 +1,105 @@
-# SalesForce MVP — Frontend
+# SalesForce CRM
 
-A frontend-only MVP for a sales workforce CRM, built with the Next.js App
-Router. Configuration and library versions mirror the madenkorea-production
-reference app (Next 14.2.35, React 18.2, TypeScript 5.2, Tailwind 3.3 +
-shadcn/ui conventions).
+A field-first CRM for Indian sales teams — online/offline lead capture,
+hierarchy-scoped access, a Cold→Warm→Hot→Order-Secured pipeline, GST-ready
+quotations, activities, campaigns, targets and reporting.
 
-## Run it
+**Stack:** Next.js 14 (App Router) · TypeScript 5.6 · Prisma 6 + MySQL 8 ·
+NextAuth (credentials, JWT sessions) · TanStack React Query 5 · Tailwind 3 +
+shadcn/ui · Recharts · dnd-kit · vitest.
+
+## Getting started
+
+Prerequisites: Node 20+, MySQL 8 running locally.
 
 ```bash
 npm install
-npm run dev      # http://localhost:3000
-npm run build    # production build
-npm run typecheck
+cp .env.example .env         # fill DATABASE_URL, NEXTAUTH_URL/SECRET
+npm run db:push              # create/update the schema
+npm run db:seed              # load the demo dataset
+npm run dev                  # http://localhost:3000
 ```
 
-## What it covers
+**Demo sign-in:** every seeded member uses password `demo123`
+(e.g. `sneha@salesforce.demo` — sales rep, `rahul@salesforce.demo` — team
+lead, `arjun@salesforce.demo` — admin). The login page also offers a
+one-click persona grid.
 
-### 1. Hierarchy-based workforce & access
-Four levels: **Sales Head → Regional Manager → Team Lead → Sales Rep**.
-Visibility flows down the management chain — every user sees their own
-records plus everything owned by their direct and indirect reports
-(`lib/rbac.ts`). All pages (dashboard, leads, contacts, pipeline, team)
-filter through this. Managers can add workforce members at levels strictly
-below their own on the Team page.
+### Scripts
 
-Sign in as any member on the login screen to experience that level's view
-(mock auth — swap for NextAuth/etc. later).
+| Script | Purpose |
+|---|---|
+| `npm run dev` / `build` / `start` | Next.js lifecycle |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run lint` | ESLint (next/core-web-vitals) |
+| `npm test` | Unit tests (no database needed) |
+| `npm run test:integration` | Integration tests against `DATABASE_URL` |
+| `npm run db:push` / `db:seed` | Prisma schema push / demo seed |
 
-### 2. Leads — online and offline
-- Every lead carries a **source** tagged as an *online* channel (website,
-  social, email campaign, marketplace) or *offline* channel (walk-in, phone,
-  field visit, event, referral).
-- **Offline capture**: if the device loses connectivity, new leads are queued
-  locally (`pendingSync`) and flushed automatically when the browser comes
-  back online — with a visible "pending sync" badge in the topbar and on
-  lead rows. Try it with browser DevTools → Network → Offline.
-- Lead lifecycle: New → Contacted → Qualified → Converted / Disqualified.
+CI (GitHub Actions) runs typecheck, lint, both test suites (against a
+MySQL 8 service container) and the production build on every push/PR.
 
-### 3. Full pipeline — contact to sale
-- Qualified leads **convert** into a Contact + a Deal (Qualification stage).
-- The **Pipeline** page is a drag-and-drop kanban:
-  Qualification → Proposal → Negotiation → Won / Lost (lost requires a
-  reason). Each card also has a fallback "move to" menu for touch devices.
-- Won deals feed the revenue KPIs and the monthly revenue chart on the
-  dashboard.
+## Architecture in one paragraph
 
-### 4. Demo "bells and whistles"
-- **Activities / My Day** — calls, meetings, tasks and notes logged against
-  leads, deals and contacts; overdue / due-today / upcoming buckets; managers
-  can flip to their team's list.
-- **Detail pages** — every lead and deal has a full workspace page with an
-  activity timeline.
-- **Products & quotation** — a product catalogue; deal line items drive the
-  deal value automatically.
-- **Targets & attainment** — monthly quota per member with progress bars on
-  the dashboard and the team tree (manager quotas roll up their subtree).
-- **Reports** — won-revenue leaderboard, online/offline lead trend, source
-  win-rate table, lost-reason breakdown, CSV export of leads and deals.
-- **Notifications** — in-app bell: lead assignments, stage moves on your
-  deals, closed-won alerts to the owner's manager.
-- **Global search** — Ctrl+K across leads, contacts and deals in scope.
-- **Auto-assignment** — round-robin lead routing across the reps in the
-  creator's scope, plus duplicate detection on phone/email at capture time.
+Route handlers under `app/api/**` are the whole backend: each one resolves
+the session actor (`requireUser`), computes the actor's hierarchy-visibility
+set server-side (`lib/server/rbac.ts`), validates input with zod, and reads/
+writes MySQL through Prisma (money stored as paise `BigInt`, converted to
+rupees at the wire). Multi-record flows — lead conversion, deactivation
+handover, quote numbering, duplicate merges, PII erasure — run inside
+transactions. The UI consumes it all through typed React Query hooks
+(`lib/api/*`); role capabilities come from one matrix (`lib/policy.ts`)
+enforced in the UI *and* on the server.
 
-### 5. CRM structure (Salesforce-style)
-- **Accounts** — companies as first-class records with contacts and deal
-  rollups (open pipeline / won). Converting a lead auto-matches or creates
-  the account from the lead's company name.
-- **Campaigns** — leads are attributed to online/offline campaigns; each
-  campaign card shows its funnel (leads → converted → pipeline → won) and
-  return against budget.
-- **Sales forecast** — stage-weighted pipeline on the Reports page
-  (qualification 30% / proposal 50% / negotiation 75%).
-- **Email compose** — a demo composer on lead and deal pages that logs the
-  email to the record's timeline (no real send; swap in SES/SendGrid later).
+## Feature map
 
-### 6. Demo differentiators
-- **Lead scoring** — transparent rule-based 0–100 score (source quality,
-  value, freshness, engagement, qualification) with Hot/Warm/Cold badges
-  and score sorting.
-- **CSV bulk import** — spreadsheet migration with header detection,
-  preview and automatic duplicate skipping.
-- **WhatsApp click-to-chat** — prefilled `wa.me` links on leads, contacts
-  and deals.
-- **Printable quotation** — `/quote/<dealId>`: a clean GST-style quote from
-  the deal's line items (print / save as PDF).
-- **Geo check-in** — capture location when logging field activities; shown
-  as a Google Maps link on timelines.
-- **Report periods** — this month / quarter / 6 months / all-time filter.
+- **Leads** — capture (online/offline sources, attachments, campaign
+  attribution, DPDP consent, fairest-rep auto-assign), scoring
+  (Hot/Warm/Cold), CSV import with server-side dedupe, bulk reassign,
+  conversion (atomic contact + account + deal).
+- **Offline** — leads captured offline queue in a durable outbox and replay
+  with idempotency keys the server dedupes; PWA service worker keeps
+  visited pages available (production builds).
+- **Pipeline** — optimistic drag-and-drop kanban; deal workspace with
+  product line items driving value, editable close date, numbered GST
+  quotations (draft/sent/accepted) printed from org settings.
+- **Activities** — My Day (overdue/today/upcoming), manager delegation with
+  notifications, geo check-in, voice dictation (Web Speech, en-IN),
+  logged emails.
+- **Hierarchy** — Sales Head → RM → Team Lead → Rep; every query is scoped
+  to the actor's subtree; Team page shows stats + target attainment;
+  deactivation hands over open records and reports in one transaction.
+- **Admin** — users/roles, monthly targets, product catalogue, organisation
+  identity (feeds quotations), pipeline vocabulary + forecast weights,
+  duplicate-merge Data Quality tab.
+- **Insight** — role-scoped dashboard, stage-weighted forecast, period
+  reports, campaign ROI, CSV exports, server-authored audit trail.
+- **Live** — SSE notification stream; global Ctrl+K search.
+- **Privacy (DPDP)** — consent timestamps, per-record JSON export,
+  admin-only audited PII erasure preserving business aggregates.
 
-## Architecture notes
+## Published API limits
 
-- **Data layer**: `lib/store.tsx` — React context backed by localStorage,
-  seeded from `lib/mock-data.ts`. Every store mutation maps 1:1 to a future
-  backend endpoint; `lib/types.ts` doubles as the API contract.
-- **Access control**: `lib/rbac.ts` — pure functions over the user tree
-  (`visibleUserIds`, `assignableUsers`, `creatableRoles`).
-- **UI**: shadcn/ui-style components in `components/ui`, Radix primitives,
-  lucide icons, sonner toasts, next-themes dark mode, Recharts dashboards,
-  dnd-kit kanban.
-- Reset the demo data anytime from the avatar menu in the topbar.
+| Scope | Limit |
+|---|---|
+| Credential sign-in | 10 requests / minute / IP |
+| API writes | 60 requests / minute / IP |
+| API reads | 300 requests / minute / IP |
+| CSV import | 2,000 rows / request |
+| Attachments | 10 files / upload, small images inlined (S3 pending) |
+
+## Documentation
+
+- `DOCUMENTATION.md` — full application reference
+- `EXECUTION_PLAN.md` — delivery plan + live status
+- `PRODUCTION_ROADMAP.md` / `APP_DESIGN_PLAN.md` — rationale and research
+  triage behind the plan
+
+## Known boundaries
+
+- Attachment binaries and outbound email use interim implementations
+  (inline previews, logged-only email) until AWS S3/SES credentials are
+  configured (`.env.example` lists the variables).
+- New members are created with the demo password; the invite/reset flow is
+  the next auth increment.
+- Rate limiting is in-memory (single node); move to Redis when scaling out.

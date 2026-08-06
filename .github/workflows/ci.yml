@@ -8,6 +8,23 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: salesforce
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/salesforce
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ci-only-secret-not-used-in-production
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,11 +33,17 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci
+      - name: Push schema
+        run: npx prisma db push
+      - name: Seed database
+        run: npx prisma db seed
       - name: Typecheck
         run: npm run typecheck
       - name: Lint
         run: npm run lint
       - name: Unit tests
         run: npm test
+      - name: Integration tests (MySQL)
+        run: npm run test:integration
       - name: Build
         run: npm run build

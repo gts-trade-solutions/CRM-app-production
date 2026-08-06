@@ -1,5 +1,16 @@
 # Execution Plan — SalesForce: MVP → Production v1 → Growth
 
+> **Status (6 Aug 2026):**
+> **M0 ✅** git/CI/tests · **M1 ✅** design milestone · **M2 ✅** MySQL 8 +
+> Prisma, NextAuth, server RBAC, transactional conversion, full resource
+> API · **M3 ✅** entire frontend on the API, localStorage store deleted ·
+> **M4 ◐** SSE notifications, duplicate merge, voice dictation, PWA/offline
+> shipped — S3 attachments + SES email **blocked on AWS credentials**;
+> approvals pending · **M5 ◐** security headers, rate limits, DPDP
+> consent/export/erasure shipped — accessibility audit, load test, ops
+> runbook pending. CI runs the 44-test suite against a MySQL container.
+> Remaining external needs: AWS credentials; production hosting + MySQL.
+
 **This is the single source of truth for delivery.** It consolidates and
 supersedes the phase lists in `PRODUCTION_ROADMAP.md` (infrastructure
 phases 0–5), `APP_DESIGN_PLAN.md` (design phases A–C), and the triage of
