@@ -30,6 +30,7 @@ import { GlobalSearch } from '@/components/global-search';
 import { NotificationsMenu } from '@/components/notifications-menu';
 import { Capability, hasCapability } from '@/lib/policy';
 import { useTheme } from 'next-themes';
+import { signOut } from 'next-auth/react';
 import { useStore } from '@/lib/store';
 import { ROLE_LABELS } from '@/lib/types';
 import { cn, initials } from '@/lib/utils';
@@ -242,13 +243,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Reset demo data
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => {
+                onClick={async () => {
+                  // End the NextAuth session and the mock-store identity.
+                  await signOut({ redirect: false });
                   logout();
                   router.replace('/login');
                 }}
               >
                 <LogOut />
-                Switch user
+                Sign out
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

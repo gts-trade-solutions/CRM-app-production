@@ -1,28 +1,19 @@
 // Exemplar resource endpoint — the pattern every entity follows in M2/M3:
-// zod-validated input, server-side RBAC scoping, paise→rupee conversion at
-// the wire, pagination.
-//
-// AUTH INTERIM: until NextAuth lands (M3), the actor is taken from the
-// x-user-id header. This is a development scaffold, NOT security — the
-// route must switch to session-derived identity before any deployment.
+// session identity (requireUser), zod-validated input, server-side RBAC
+// scoping, paise→rupee conversion at the wire, pagination.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma, toPaise, toRupees } from '@/lib/server/db';
+import { requireUser } from '@/lib/server/auth';
 import { visibleUserIdsFor } from '@/lib/server/rbac';
 
 export const dynamic = 'force-dynamic';
 
 const PAGE_SIZE = 25;
 
-async function actorFrom(req: NextRequest) {
-  const userId = req.headers.get('x-user-id');
-  if (!userId) return null;
-  return prisma.user.findFirst({ where: { id: userId, active: true } });
-}
-
 export async function GET(req: NextRequest) {
-  const actor = await actorFrom(req);
+  const actor = await requireUser(req);
   if (!actor) {
     return NextResponse.json({ error: 'Unauthenticated' }, { status: 401 });
   }
@@ -106,7 +97,7 @@ const createLeadSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const actor = await actorFrom(req);
+  const actor = await requireUser(req);
   if (!actor) {
     return NextResponse.json({ error: 'Unauthenticated' }, { status: 401 });
   }

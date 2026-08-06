@@ -4,6 +4,7 @@
 // Idempotent: wipes and re-creates.
 
 import { PrismaClient } from '@prisma/client';
+import { hashSync } from 'bcryptjs';
 import {
   seedAccounts,
   seedCampaigns,
@@ -42,15 +43,20 @@ async function main() {
   await prisma.auditEvent.deleteMany();
   await prisma.orgSettings.deleteMany();
   await prisma.stageSetting.deleteMany();
+  // Self-referential manager FK (NoAction) — detach before bulk delete.
+  await prisma.user.updateMany({ data: { managerId: null } });
   await prisma.user.deleteMany();
 
   // Users — seed order already lists managers before their reports.
+  // Every demo user gets the same password: demo123 (hashed).
+  const demoHash = hashSync('demo123', 10);
   for (const u of seedUsers) {
     await prisma.user.create({
       data: {
         id: u.id,
         name: u.name,
         email: u.email,
+        passwordHash: demoHash,
         role: u.role,
         managerId: u.managerId,
         region: u.region,

@@ -9,6 +9,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { signIn } from 'next-auth/react';
 import { Building2, ChevronRight, LogIn } from 'lucide-react';
 import { toast } from 'sonner';
 import { useStore } from '@/lib/store';
@@ -30,12 +31,27 @@ export default function LoginPage() {
 
   const activeUsers = state.users.filter((u) => u.active !== false);
 
-  function signInAs(user: User) {
+  /** Demo password shared by all seeded members (see prisma/seed.ts). */
+  const DEMO_PASSWORD = 'demo123';
+
+  // Creates the real NextAuth session AND sets the mock-store identity —
+  // the bridge state while data still lives client-side (M3 removes the
+  // store half).
+  async function signInAs(user: User, password: string) {
+    const result = await signIn('credentials', {
+      redirect: false,
+      email: user.email,
+      password,
+    });
+    if (result?.error) {
+      toast.error('Invalid email or password');
+      return;
+    }
     login(user.id);
     router.replace(postLoginRoute(user.role));
   }
 
-  function handleCredentials(e: React.FormEvent) {
+  async function handleCredentials(e: React.FormEvent) {
     e.preventDefault();
     const user = activeUsers.find(
       (u) => u.email.toLowerCase() === email.trim().toLowerCase(),
@@ -44,7 +60,7 @@ export default function LoginPage() {
       toast.error('No active member found with that email');
       return;
     }
-    signInAs(user);
+    await signInAs(user, password || DEMO_PASSWORD);
   }
 
   const sorted = [...activeUsers].sort(
@@ -91,8 +107,9 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                Demo build — any password is accepted for seeded emails
-                (try sneha@salesforce.demo).
+                Demo build — all seeded members use password{' '}
+                <code className="rounded bg-muted px-1">demo123</code> (try
+                sneha@salesforce.demo).
               </p>
             </div>
             <Button type="submit" className="w-full">
@@ -126,7 +143,7 @@ export default function LoginPage() {
               {sorted.map((user) => (
                 <li key={user.id}>
                   <button
-                    onClick={() => signInAs(user)}
+                    onClick={() => signInAs(user, DEMO_PASSWORD)}
                     className="flex w-full items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
                   >
                     <Avatar className="h-9 w-9">
