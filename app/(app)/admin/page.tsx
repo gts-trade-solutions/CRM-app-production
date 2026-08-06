@@ -1,26 +1,32 @@
 'use client';
 
-// Admin console: the configuration surface that makes the app manageable —
-// user lifecycle (incl. deactivation with handover), targets, product
-// catalogue, organisation identity (feeds quotations) and pipeline
-// vocabulary. Admin-only via the policy matrix.
+// Admin console — fully API-backed: user lifecycle (edit + deactivation
+// with handover), targets, product catalogue, organisation identity and
+// pipeline vocabulary. Every mutation is capability-checked server-side.
 
 import { useMemo, useState } from 'react';
-import { format } from 'date-fns';
 import { Pencil, Plus, UserX } from 'lucide-react';
-import { useStore } from '@/lib/store';
-import { RequireCapability } from '@/components/require-capability';
 import {
-  DealStage,
+  TeamMember,
+  useDeactivateMember,
+  useProducts,
+  useSetTarget,
+  useSettings,
+  useTeam,
+  useUpdateMember,
+  useUpdateSettings,
+  useUpsertProduct,
+  WireProduct,
+} from '@/lib/api/crm-hooks';
+import { useMe } from '@/lib/api/hooks';
+import {
   PIPELINE_STAGES,
-  Product,
   ROLE_LABELS,
   ROLE_LEVEL,
   Role,
-  User,
 } from '@/lib/types';
-import { subordinateIds } from '@/lib/rbac';
 import { cn, formatINR, initials } from '@/lib/utils';
+import { RequireCapability } from '@/components/require-capability';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -29,7 +35,6 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
 } from '@/components/ui/card';
 import {
   Dialog,
@@ -106,12 +111,14 @@ function AdminContent() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Users                                                               */
+/* ------------------------------------------------------------------ Users */
 
 function UsersTab() {
-  const { state, updateUser, deactivateUser } = useStore();
-  const [editing, setEditing] = useState<User | null>(null);
+  const { data: team } = useTeam();
+  const updateMember = useUpdateMember();
+  const deactivate = useDeactivateMember();
+
+  const [editing, setEditing] = useState<TeamMember | null>(null);
   const [edit, setEdit] = useState({
     name: '',
     email: '',
@@ -120,65 +127,27 @@ function UsersTab() {
     region: '',
     title: '',
   });
-  const [deactivating, setDeactivating] = useState<User | null>(null);
+  const [deactivating, setDeactivating] = useState<TeamMember | null>(null);
   const [successorId, setSuccessorId] = useState('');
 
-  const userById = useMemo(
-    () => new Map(state.users.map((u) => [u.id, u])),
-    [state.users],
-  );
+  const users = team?.users ?? [];
+  const byId = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
 
-  const openCounts = useMemo(() => {
-    if (!deactivating) return { leads: 0, deals: 0, activities: 0, reports: 0 };
-    return {
-      leads: state.leads.filter(
-        (l) =>
-          l.ownerId === deactivating.id &&
-          l.status !== 'converted' &&
-          l.status !== 'disqualified',
-      ).length,
-      deals: state.deals.filter(
-        (d) =>
-          d.ownerId === deactivating.id &&
-          d.stage !== 'won' &&
-          d.stage !== 'lost',
-      ).length,
-      activities: state.salesActivities.filter(
-        (a) => a.ownerId === deactivating.id && !a.completedAt,
-      ).length,
-      reports: state.users.filter((u) => u.managerId === deactivating.id)
-        .length,
-    };
-  }, [deactivating, state]);
-
-  function openEdit(user: User) {
-    setEditing(user);
-    setEdit({
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      managerId: user.managerId ?? '',
-      region: user.region,
-      title: user.title,
-    });
-  }
-
-  const possibleManagers = state.users.filter(
-    (u) =>
-      u.active !== false &&
-      u.id !== editing?.id &&
-      ROLE_LEVEL[u.role] < ROLE_LEVEL[edit.role],
-  );
-
-  const possibleSuccessors = state.users.filter(
-    (u) => u.active !== false && u.id !== deactivating?.id,
-  );
-
-  const sorted = [...state.users].sort(
+  const sorted = [...users].sort(
     (a, b) =>
-      Number(b.active !== false) - Number(a.active !== false) ||
-      ROLE_LEVEL[a.role] - ROLE_LEVEL[b.role] ||
+      Number(b.active) - Number(a.active) ||
+      ROLE_LEVEL[a.role as Role] - ROLE_LEVEL[b.role as Role] ||
       a.name.localeCompare(b.name),
+  );
+
+  const possibleManagers = users.filter(
+    (u) =>
+      u.active &&
+      u.id !== editing?.id &&
+      ROLE_LEVEL[u.role as Role] < ROLE_LEVEL[edit.role],
+  );
+  const possibleSuccessors = users.filter(
+    (u) => u.active && u.id !== deactivating?.id,
   );
 
   return (
@@ -186,7 +155,7 @@ function UsersTab() {
       <CardHeader className="pb-2">
         <CardDescription>
           Add members from the Team page. Deactivation hands all open records
-          and direct reports to a successor.
+          and direct reports to a successor and disables login.
         </CardDescription>
       </CardHeader>
       <CardContent className="p-0">
@@ -201,74 +170,86 @@ function UsersTab() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {sorted.map((user) => {
-              const inactive = user.active === false;
-              return (
-                <TableRow key={user.id} className={cn(inactive && 'opacity-60')}>
-                  <TableCell>
-                    <div className="flex items-center gap-3">
-                      <Avatar className="h-9 w-9">
-                        <AvatarFallback>{initials(user.name)}</AvatarFallback>
-                      </Avatar>
-                      <div>
-                        <p className="font-medium">{user.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {user.email}
-                        </p>
-                      </div>
+            {sorted.map((user) => (
+              <TableRow
+                key={user.id}
+                className={cn(!user.active && 'opacity-60')}
+              >
+                <TableCell>
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-9 w-9">
+                      <AvatarFallback>{initials(user.name)}</AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <p className="font-medium">{user.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {user.email}
+                      </p>
                     </div>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    <Badge variant="secondary">{ROLE_LABELS[user.role]}</Badge>
-                  </TableCell>
-                  <TableCell className="hidden text-sm lg:table-cell">
-                    {user.managerId
-                      ? userById.get(user.managerId)?.name ?? '—'
-                      : '—'}
-                  </TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={inactive ? 'secondary' : 'outline'}
-                      className={cn(
-                        !inactive &&
-                          'border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300',
-                      )}
-                    >
-                      {inactive ? 'Inactive' : 'Active'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    {!inactive && (
-                      <div className="flex gap-1">
+                  </div>
+                </TableCell>
+                <TableCell className="hidden md:table-cell">
+                  <Badge variant="secondary">
+                    {ROLE_LABELS[user.role as Role]}
+                  </Badge>
+                </TableCell>
+                <TableCell className="hidden text-sm lg:table-cell">
+                  {user.managerId
+                    ? byId.get(user.managerId)?.name ?? '—'
+                    : '—'}
+                </TableCell>
+                <TableCell>
+                  <Badge
+                    variant={!user.active ? 'secondary' : 'outline'}
+                    className={cn(
+                      user.active &&
+                        'border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300',
+                    )}
+                  >
+                    {user.active ? 'Active' : 'Inactive'}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  {user.active && (
+                    <div className="flex gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => {
+                          setEditing(user);
+                          setEdit({
+                            name: user.name,
+                            email: user.email,
+                            role: user.role as Role,
+                            managerId: user.managerId ?? '',
+                            region: user.region,
+                            title: user.title,
+                          });
+                        }}
+                        aria-label={`Edit ${user.name}`}
+                      >
+                        <Pencil />
+                      </Button>
+                      {user.role !== 'admin' && (
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-8 w-8"
-                          onClick={() => openEdit(user)}
-                          aria-label={`Edit ${user.name}`}
+                          className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                          onClick={() => {
+                            setDeactivating(user);
+                            setSuccessorId('');
+                          }}
+                          aria-label={`Deactivate ${user.name}`}
                         >
-                          <Pencil />
+                          <UserX />
                         </Button>
-                        {user.role !== 'admin' && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                            onClick={() => {
-                              setDeactivating(user);
-                              setSuccessorId('');
-                            }}
-                            aria-label={`Deactivate ${user.name}`}
-                          >
-                            <UserX />
-                          </Button>
-                        )}
-                      </div>
-                    )}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
+                      )}
+                    </div>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
           </TableBody>
         </Table>
       </CardContent>
@@ -358,18 +339,25 @@ function UsersTab() {
           </div>
           <DialogFooter>
             <Button
-              disabled={!edit.name.trim() || !edit.email.trim()}
+              disabled={
+                !edit.name.trim() ||
+                !edit.email.trim() ||
+                updateMember.isPending
+              }
               onClick={() => {
                 if (!editing) return;
-                updateUser(editing.id, {
-                  name: edit.name.trim(),
-                  email: edit.email.trim(),
-                  role: edit.role,
-                  managerId: edit.managerId || null,
-                  region: edit.region,
-                  title: edit.title,
-                });
-                setEditing(null);
+                updateMember.mutate(
+                  {
+                    id: editing.id,
+                    name: edit.name.trim(),
+                    email: edit.email.trim(),
+                    role: edit.role,
+                    managerId: edit.managerId || null,
+                    region: edit.region,
+                    title: edit.title,
+                  },
+                  { onSuccess: () => setEditing(null) },
+                );
               }}
             >
               Save
@@ -387,38 +375,25 @@ function UsersTab() {
           <DialogHeader>
             <DialogTitle>Deactivate {deactivating?.name}</DialogTitle>
             <DialogDescription>
-              Their open work is handed to a successor; secured/lost history
-              stays with them for reporting.
+              Their open leads, deals, pending activities, contacts, accounts
+              and direct reports move to the successor; login is disabled.
+              Secured/lost history stays with them for reporting.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="rounded-lg bg-muted/60 p-3 text-sm">
-              <p className="font-medium">Will be handed over:</p>
-              <ul className="mt-1 space-y-0.5 text-muted-foreground">
-                <li>{openCounts.leads} open leads</li>
-                <li>{openCounts.deals} open deals</li>
-                <li>{openCounts.activities} pending activities</li>
-                <li>All contacts & accounts they own</li>
-                {openCounts.reports > 0 && (
-                  <li>{openCounts.reports} direct reports (re-pointed)</li>
-                )}
-              </ul>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Successor *</Label>
-              <Select value={successorId} onValueChange={setSuccessorId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose who takes over" />
-                </SelectTrigger>
-                <SelectContent>
-                  {possibleSuccessors.map((u) => (
-                    <SelectItem key={u.id} value={u.id}>
-                      {u.name} ({ROLE_LABELS[u.role]})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+          <div className="space-y-1.5">
+            <Label>Successor *</Label>
+            <Select value={successorId} onValueChange={setSuccessorId}>
+              <SelectTrigger>
+                <SelectValue placeholder="Choose who takes over" />
+              </SelectTrigger>
+              <SelectContent>
+                {possibleSuccessors.map((u) => (
+                  <SelectItem key={u.id} value={u.id}>
+                    {u.name} ({ROLE_LABELS[u.role as Role]})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeactivating(null)}>
@@ -426,12 +401,14 @@ function UsersTab() {
             </Button>
             <Button
               variant="destructive"
-              disabled={!successorId}
+              disabled={!successorId || deactivate.isPending}
               onClick={() => {
                 if (deactivating) {
-                  deactivateUser(deactivating.id, successorId);
+                  deactivate.mutate(
+                    { id: deactivating.id, successorId },
+                    { onSuccess: () => setDeactivating(null) },
+                  );
                 }
-                setDeactivating(null);
               }}
             >
               Deactivate & hand over
@@ -443,17 +420,18 @@ function UsersTab() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Targets                                                             */
+/* ---------------------------------------------------------------- Targets */
 
 function TargetsTab() {
-  const { state, setTarget } = useStore();
+  const { data: team } = useTeam();
+  const setTarget = useSetTarget();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
-  const active = state.users.filter((u) => u.active !== false);
+  const active = (team?.users ?? []).filter((u) => u.active);
   const sorted = [...active].sort(
     (a, b) =>
-      ROLE_LEVEL[a.role] - ROLE_LEVEL[b.role] || a.name.localeCompare(b.name),
+      ROLE_LEVEL[a.role as Role] - ROLE_LEVEL[b.role as Role] ||
+      a.name.localeCompare(b.name),
   );
 
   return (
@@ -461,8 +439,7 @@ function TargetsTab() {
       <CardHeader className="pb-2">
         <CardDescription>
           Monthly revenue quota per member. Manager quotas represent their
-          whole subtree ({subordinateIds(state.users, 'u1').length + 1} members
-          under the org root).
+          whole subtree.
         </CardDescription>
       </CardHeader>
       <CardContent className="p-0">
@@ -477,14 +454,16 @@ function TargetsTab() {
           </TableHeader>
           <TableBody>
             {sorted.map((user) => {
-              const current = state.targets[user.id] ?? 0;
+              const current = team?.targets[user.id] ?? 0;
               const draft = drafts[user.id] ?? String(current || '');
               const dirty = Number(draft) !== current;
               return (
                 <TableRow key={user.id}>
                   <TableCell className="font-medium">{user.name}</TableCell>
                   <TableCell className="hidden md:table-cell">
-                    <Badge variant="secondary">{ROLE_LABELS[user.role]}</Badge>
+                    <Badge variant="secondary">
+                      {ROLE_LABELS[user.role as Role]}
+                    </Badge>
                   </TableCell>
                   <TableCell>
                     <Input
@@ -503,8 +482,13 @@ function TargetsTab() {
                   <TableCell>
                     <Button
                       size="sm"
-                      disabled={!dirty}
-                      onClick={() => setTarget(user.id, Number(draft) || 0)}
+                      disabled={!dirty || setTarget.isPending}
+                      onClick={() =>
+                        setTarget.mutate({
+                          userId: user.id,
+                          amount: Number(draft) || 0,
+                        })
+                      }
                     >
                       Save
                     </Button>
@@ -519,14 +503,19 @@ function TargetsTab() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Products                                                            */
+/* --------------------------------------------------------------- Products */
 
 function ProductsTab() {
-  const { state, addProduct, updateProduct } = useStore();
+  const { data: products } = useProducts();
+  const upsert = useUpsertProduct();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', sku: '', category: '', price: '' });
+  const [form, setForm] = useState({
+    name: '',
+    sku: '',
+    category: '',
+    price: '',
+  });
 
   function openNew() {
     setEditingId(null);
@@ -534,7 +523,7 @@ function ProductsTab() {
     setDialogOpen(true);
   }
 
-  function openEdit(p: Product) {
+  function openEdit(p: WireProduct) {
     setEditingId(p.id);
     setForm({
       name: p.name,
@@ -545,24 +534,12 @@ function ProductsTab() {
     setDialogOpen(true);
   }
 
-  function save() {
-    const payload = {
-      name: form.name.trim(),
-      sku: form.sku.trim(),
-      category: form.category.trim(),
-      price: Number(form.price) || 0,
-    };
-    if (editingId) updateProduct(editingId, payload);
-    else addProduct(payload);
-    setDialogOpen(false);
-  }
-
   return (
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardDescription>
-            The catalogue behind deal line items and quotations. Inactive
+            The catalogue behind deal line items and quotations. Retired
             products stay on old quotes but can&apos;t be added to new ones.
           </CardDescription>
           <Button size="sm" onClick={openNew}>
@@ -583,51 +560,56 @@ function ProductsTab() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {state.products.map((p) => {
-              const inactive = p.active === false;
-              return (
-                <TableRow key={p.id} className={cn(inactive && 'opacity-60')}>
-                  <TableCell>
-                    <p className="font-medium">{p.name}</p>
-                    <p className="text-xs text-muted-foreground">{p.sku}</p>
-                  </TableCell>
-                  <TableCell className="hidden text-sm md:table-cell">
-                    {p.category}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatINR(p.price)}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={inactive ? 'secondary' : 'outline'}>
-                      {inactive ? 'Inactive' : 'Active'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => openEdit(p)}
-                        aria-label={`Edit ${p.name}`}
-                      >
-                        <Pencil />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8"
-                        onClick={() =>
-                          updateProduct(p.id, { active: inactive })
-                        }
-                      >
-                        {inactive ? 'Activate' : 'Retire'}
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
+            {(products ?? []).map((p) => (
+              <TableRow key={p.id} className={cn(!p.active && 'opacity-60')}>
+                <TableCell>
+                  <p className="font-medium">{p.name}</p>
+                  <p className="text-xs text-muted-foreground">{p.sku}</p>
+                </TableCell>
+                <TableCell className="hidden text-sm md:table-cell">
+                  {p.category}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatINR(p.price)}
+                </TableCell>
+                <TableCell>
+                  <Badge variant={!p.active ? 'secondary' : 'outline'}>
+                    {p.active ? 'Active' : 'Inactive'}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  <div className="flex gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => openEdit(p)}
+                      aria-label={`Edit ${p.name}`}
+                    >
+                      <Pencil />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8"
+                      disabled={upsert.isPending}
+                      onClick={() =>
+                        upsert.mutate({
+                          id: p.id,
+                          name: p.name,
+                          sku: p.sku,
+                          category: p.category,
+                          price: p.price,
+                          active: !p.active,
+                        })
+                      }
+                    >
+                      {p.active ? 'Retire' : 'Activate'}
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
           </TableBody>
         </Table>
       </CardContent>
@@ -677,8 +659,23 @@ function ProductsTab() {
           </div>
           <DialogFooter>
             <Button
-              disabled={!form.name.trim() || !(Number(form.price) > 0)}
-              onClick={save}
+              disabled={
+                !form.name.trim() ||
+                !(Number(form.price) > 0) ||
+                upsert.isPending
+              }
+              onClick={() =>
+                upsert.mutate(
+                  {
+                    ...(editingId ? { id: editingId } : {}),
+                    name: form.name.trim(),
+                    sku: form.sku.trim(),
+                    category: form.category.trim(),
+                    price: Number(form.price) || 0,
+                  },
+                  { onSuccess: () => setDialogOpen(false) },
+                )
+              }
             >
               {editingId ? 'Save' : 'Add product'}
             </Button>
@@ -689,20 +686,29 @@ function ProductsTab() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Organisation                                                        */
+/* ------------------------------------------------------------ Organisation */
 
 function OrgTab() {
-  const { state, updateOrgSettings } = useStore();
-  const s = state.orgSettings;
-  const [form, setForm] = useState({
-    companyName: s.companyName,
-    addressLine: s.addressLine,
-    gstin: s.gstin,
-    quoteValidityDays: String(s.quoteValidityDays),
-    gstRate: String(Math.round(s.gstRate * 100)),
-    quoteTerms: s.quoteTerms.join('\n'),
-  });
+  const { data: settings } = useSettings();
+  const update = useUpdateSettings();
+  const org = settings?.org;
+  const [form, setForm] = useState<{
+    companyName: string;
+    addressLine: string;
+    gstin: string;
+    quoteValidityDays: string;
+    gstRate: string;
+    quoteTerms: string;
+  } | null>(null);
+
+  const current = form ?? {
+    companyName: org?.companyName ?? '',
+    addressLine: org?.addressLine ?? '',
+    gstin: org?.gstin ?? '',
+    quoteValidityDays: String(org?.quoteValidityDays ?? 15),
+    gstRate: String(Math.round((org?.gstRate ?? 0.18) * 100)),
+    quoteTerms: (org?.quoteTerms ?? []).join('\n'),
+  };
 
   return (
     <Card>
@@ -715,23 +721,27 @@ function OrgTab() {
         <div className="space-y-1.5">
           <Label>Company name</Label>
           <Input
-            value={form.companyName}
-            onChange={(e) => setForm({ ...form, companyName: e.target.value })}
+            value={current.companyName}
+            onChange={(e) =>
+              setForm({ ...current, companyName: e.target.value })
+            }
           />
         </div>
         <div className="space-y-1.5">
           <Label>Address line</Label>
           <Input
-            value={form.addressLine}
-            onChange={(e) => setForm({ ...form, addressLine: e.target.value })}
+            value={current.addressLine}
+            onChange={(e) =>
+              setForm({ ...current, addressLine: e.target.value })
+            }
           />
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <div className="space-y-1.5">
             <Label>GSTIN</Label>
             <Input
-              value={form.gstin}
-              onChange={(e) => setForm({ ...form, gstin: e.target.value })}
+              value={current.gstin}
+              onChange={(e) => setForm({ ...current, gstin: e.target.value })}
             />
           </div>
           <div className="space-y-1.5">
@@ -739,9 +749,9 @@ function OrgTab() {
             <Input
               type="number"
               min={1}
-              value={form.quoteValidityDays}
+              value={current.quoteValidityDays}
               onChange={(e) =>
-                setForm({ ...form, quoteValidityDays: e.target.value })
+                setForm({ ...current, quoteValidityDays: e.target.value })
               }
             />
           </div>
@@ -751,8 +761,8 @@ function OrgTab() {
               type="number"
               min={0}
               max={100}
-              value={form.gstRate}
-              onChange={(e) => setForm({ ...form, gstRate: e.target.value })}
+              value={current.gstRate}
+              onChange={(e) => setForm({ ...current, gstRate: e.target.value })}
             />
           </div>
         </div>
@@ -760,22 +770,27 @@ function OrgTab() {
           <Label>Quotation terms (one per line)</Label>
           <Textarea
             rows={4}
-            value={form.quoteTerms}
-            onChange={(e) => setForm({ ...form, quoteTerms: e.target.value })}
+            value={current.quoteTerms}
+            onChange={(e) =>
+              setForm({ ...current, quoteTerms: e.target.value })
+            }
           />
         </div>
         <Button
+          disabled={update.isPending || !current.companyName.trim()}
           onClick={() =>
-            updateOrgSettings({
-              companyName: form.companyName.trim(),
-              addressLine: form.addressLine.trim(),
-              gstin: form.gstin.trim(),
-              quoteValidityDays: Number(form.quoteValidityDays) || 15,
-              gstRate: (Number(form.gstRate) || 18) / 100,
-              quoteTerms: form.quoteTerms
-                .split('\n')
-                .map((t) => t.trim())
-                .filter(Boolean),
+            update.mutate({
+              org: {
+                companyName: current.companyName.trim(),
+                addressLine: current.addressLine.trim(),
+                gstin: current.gstin.trim(),
+                quoteValidityDays: Number(current.quoteValidityDays) || 15,
+                gstRate: (Number(current.gstRate) || 18) / 100,
+                quoteTerms: current.quoteTerms
+                  .split('\n')
+                  .map((t) => t.trim())
+                  .filter(Boolean),
+              },
             })
           }
         >
@@ -786,11 +801,11 @@ function OrgTab() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Pipeline                                                            */
+/* --------------------------------------------------------------- Pipeline */
 
 function PipelineTab() {
-  const { state, updateStageSetting } = useStore();
+  const { data: settings } = useSettings();
+  const update = useUpdateSettings();
   const [drafts, setDrafts] = useState<
     Record<string, { label: string; weight: string }>
   >({});
@@ -799,13 +814,16 @@ function PipelineTab() {
     <Card>
       <CardHeader className="pb-2">
         <CardDescription>
-          Stage names appear across the app; weights drive the sales
-          forecast (probability an open deal at this stage closes).
+          Stage names appear across the app; weights drive the sales forecast
+          (probability an open deal at this stage closes).
         </CardDescription>
       </CardHeader>
       <CardContent className="max-w-2xl space-y-3">
-        {PIPELINE_STAGES.map((stage: DealStage) => {
-          const current = state.stageSettings[stage];
+        {PIPELINE_STAGES.map((stage) => {
+          const current = settings?.stages?.[stage] ?? {
+            label: stage,
+            weight: 0,
+          };
           const draft = drafts[stage] ?? {
             label: current.label,
             weight: String(Math.round(current.weight * 100)),
@@ -855,14 +873,20 @@ function PipelineTab() {
               </div>
               <Button
                 size="sm"
-                disabled={!dirty || !draft.label.trim()}
+                disabled={!dirty || !draft.label.trim() || update.isPending}
                 onClick={() =>
-                  updateStageSetting(stage, {
-                    label: draft.label.trim(),
-                    weight: closedStage
-                      ? current.weight
-                      : Math.min(100, Math.max(0, Number(draft.weight) || 0)) /
-                        100,
+                  update.mutate({
+                    stages: {
+                      [stage]: {
+                        label: draft.label.trim(),
+                        weight: closedStage
+                          ? current.weight
+                          : Math.min(
+                              100,
+                              Math.max(0, Number(draft.weight) || 0),
+                            ) / 100,
+                      },
+                    },
                   })
                 }
               >

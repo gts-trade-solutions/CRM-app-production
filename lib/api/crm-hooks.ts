@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { api } from './client';
+import type { WireCampaign } from './hooks';
 import { DealStage, STAGE_CONFIG } from '@/lib/types';
 
 /* ---------------------------------------------------------------- types */
@@ -395,6 +396,215 @@ export function useMarkNotificationsRead() {
   return useMutation({
     mutationFn: () => api('/api/notifications', { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+  });
+}
+
+/* ---------------------------------------------------------------- stats */
+
+export interface DashboardStats {
+  leads: { total: number; online: number; offline: number; converted: number };
+  pipeline: {
+    openValue: number;
+    openCount: number;
+    securedValue: number;
+    securedCount: number;
+  };
+  monthTarget: { target: number; secured: number };
+  sourceData: { name: string; channel: string; count: number }[];
+  revenueByMonth: { name: string; value: number }[];
+  stageData: { name: string; value: number }[];
+  recent: { id: string; message: string; userName: string; at: string }[];
+}
+
+export function useDashboardStats() {
+  return useQuery({
+    queryKey: ['stats', 'dashboard'],
+    queryFn: () => api<DashboardStats>('/api/stats/dashboard'),
+  });
+}
+
+export interface ReportStats {
+  leaderboard: { name: string; value: number }[];
+  channelTrend: { name: string; online: number; offline: number }[];
+  sourceRows: {
+    source: string;
+    label: string;
+    channel: string;
+    leads: number;
+    converted: number;
+    rate: number;
+  }[];
+  lostReasons: { total: number; rows: { reason: string; count: number }[] };
+}
+
+export function useReportStats(period: string) {
+  return useQuery({
+    queryKey: ['stats', 'reports', period],
+    queryFn: () => api<ReportStats>(`/api/stats/reports?period=${period}`),
+    placeholderData: (prev) => prev,
+  });
+}
+
+/* ----------------------------------------------------------------- team */
+
+export interface TeamMember {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  managerId: string | null;
+  region: string;
+  title: string;
+  active: boolean;
+  stats?: {
+    leads: number;
+    openDeals: number;
+    securedValue: number;
+    securedMonth: number;
+  };
+}
+
+export interface TeamData {
+  chain: { id: string; name: string; role: string }[];
+  users: TeamMember[];
+  targets: Record<string, number>;
+}
+
+export function useTeam() {
+  return useQuery({
+    queryKey: ['team'],
+    queryFn: () => api<TeamData>('/api/team'),
+  });
+}
+
+export function useAddMember() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Record<string, unknown>) =>
+      api<{ user: TeamMember }>('/api/users', { method: 'POST', json: input }),
+    onSuccess: (r) => {
+      toast.success(`${r.user.name} added to the team`);
+      qc.invalidateQueries({ queryKey: ['team'] });
+      qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+export function useUpdateMember() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...patch }: { id: string } & Record<string, unknown>) =>
+      api(`/api/users/${id}`, { method: 'PATCH', json: patch }),
+    onSuccess: () => {
+      toast.success('Member updated');
+      qc.invalidateQueries({ queryKey: ['team'] });
+      qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+export function useDeactivateMember() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, successorId }: { id: string; successorId: string }) =>
+      api(`/api/users/${id}/deactivate`, {
+        method: 'POST',
+        json: { successorId },
+      }),
+    onSuccess: () => {
+      toast.success('Member deactivated and records handed over');
+      qc.invalidateQueries();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+export function useSetTarget() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { userId: string; amount: number }) =>
+      api('/api/targets', { method: 'PUT', json: input }),
+    onSuccess: () => {
+      toast.success('Target updated');
+      qc.invalidateQueries({ queryKey: ['team'] });
+      qc.invalidateQueries({ queryKey: ['stats'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+export function useUpsertProduct() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Record<string, unknown>) =>
+      api('/api/products', { method: 'POST', json: input }),
+    onSuccess: () => {
+      toast.success('Catalogue updated');
+      qc.invalidateQueries({ queryKey: ['products'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+export function useUpdateSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Record<string, unknown>) =>
+      api('/api/settings', { method: 'PATCH', json: input }),
+    onSuccess: () => {
+      toast.success('Settings saved');
+      qc.invalidateQueries({ queryKey: ['settings'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+/* ------------------------------------------------------------ campaigns */
+
+export interface WireCampaignWithMetrics extends WireCampaign {
+  metrics?: {
+    leadCount: number;
+    convertedCount: number;
+    pipeline: number;
+    won: number;
+  };
+}
+
+export function useCampaignsWithMetrics() {
+  return useQuery({
+    queryKey: ['campaigns', 'metrics'],
+    queryFn: () =>
+      api<{ campaigns: WireCampaignWithMetrics[] }>(
+        '/api/campaigns?metrics=1',
+      ).then((r) => r.campaigns),
+  });
+}
+
+export function useCreateCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; channel: string; budget: number }) =>
+      api<{ id: string }>('/api/campaigns', { method: 'POST', json: input }),
+    onSuccess: () => {
+      toast.success('Campaign created');
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+export function useUpdateCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string } & Record<string, unknown>) =>
+      api('/api/campaigns', { method: 'PATCH', json: input }),
+    onSuccess: () => {
+      toast.success('Campaign updated');
+      qc.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
   });
 }
 

@@ -6,7 +6,7 @@
 
 import Link from 'next/link';
 import { ShieldX } from 'lucide-react';
-import { useStore } from '@/lib/store';
+import { useMe } from '@/lib/api/hooks';
 import { Capability, hasCapability } from '@/lib/policy';
 import { Button } from '@/components/ui/button';
 
@@ -37,8 +37,8 @@ export function RequireCapability({
   capability: Capability;
   children: React.ReactNode;
 }) {
-  const { currentUser, hydrated } = useStore();
-  if (!hydrated) return null;
-  if (!hasCapability(currentUser?.role, capability)) return <Forbidden />;
+  const { data: me, isLoading } = useMe();
+  if (isLoading) return null;
+  if (!hasCapability(me?.role, capability)) return <Forbidden />;
   return <>{children}</>;
 }

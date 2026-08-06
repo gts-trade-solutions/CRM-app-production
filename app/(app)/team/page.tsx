@@ -1,27 +1,21 @@
 'use client';
 
-// Workforce hierarchy. Renders the org tree from the signed-in user down —
-// exactly the slice of the organisation their role lets them see — with
-// per-member performance rolled up from leads and deals. Managers can add
-// members at levels strictly below their own.
+// Workforce hierarchy — API-backed: the actor's subtree with per-member
+// performance and target attainment (manager quotas roll up their
+// subtree's secured orders).
 
 import { useMemo, useState } from 'react';
-import { isSameMonth } from 'date-fns';
 import { ChevronRight, Plus, UserRound } from 'lucide-react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-import { useStore } from '@/lib/store';
 import {
-  canManageWorkforce,
-  creatableRoles,
-  managerChain,
-  subordinateIds,
-  visibleUserIds,
-} from '@/lib/rbac';
-import { RequireCapability } from '@/components/require-capability';
-import { ROLE_LABELS, ROLE_LEVEL, Role, User } from '@/lib/types';
+  TeamMember,
+  useAddMember,
+  useTeam,
+} from '@/lib/api/crm-hooks';
+import { useMe } from '@/lib/api/hooks';
+import { hasCapability } from '@/lib/policy';
+import { ROLE_LABELS, ROLE_LEVEL, Role } from '@/lib/types';
 import { cn, formatINR, initials } from '@/lib/utils';
+import { RequireCapability } from '@/components/require-capability';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -51,55 +45,59 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-interface MemberStats {
-  leads: number;
-  openDeals: number;
-  wonValue: number;
-  /** Closed-won value in the current calendar month. */
-  wonMonth: number;
+function subtreeIds(users: TeamMember[], rootId: string): string[] {
+  const byManager = new Map<string, TeamMember[]>();
+  for (const u of users) {
+    if (!u.managerId) continue;
+    const list = byManager.get(u.managerId) ?? [];
+    list.push(u);
+    byManager.set(u.managerId, list);
+  }
+  const out: string[] = [];
+  const queue = [rootId];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    for (const r of byManager.get(cur) ?? []) {
+      out.push(r.id);
+      queue.push(r.id);
+    }
+  }
+  return out;
 }
-
-const memberSchema = z.object({
-  name: z.string().min(2, 'Name is required'),
-  email: z.string().email('Invalid email'),
-  role: z.string().min(1, 'Pick a role'),
-  managerId: z.string().min(1, 'Pick a manager'),
-  region: z.string().min(1, 'Region is required'),
-  title: z.string().min(2, 'Title is required'),
-});
-
-type MemberFormValues = z.infer<typeof memberSchema>;
 
 function MemberNode({
   user,
   users,
-  stats,
   targets,
   currentUserId,
   depth,
 }: {
-  user: User;
-  users: User[];
-  stats: Map<string, MemberStats>;
+  user: TeamMember;
+  users: TeamMember[];
   targets: Record<string, number>;
   currentUserId: string;
   depth: number;
 }) {
   const reports = users
-    .filter((u) => u.managerId === user.id && u.active !== false)
-    .sort((a, b) => ROLE_LEVEL[a.role] - ROLE_LEVEL[b.role] || a.name.localeCompare(b.name));
-  const s =
-    stats.get(user.id) ??
-    ({ leads: 0, openDeals: 0, wonValue: 0, wonMonth: 0 } as MemberStats);
-  // Manager quotas cover their whole subtree, so attainment for a manager
-  // is measured on the rolled-up won value of self + reports this month.
-  const subtreeWonMonth = [user.id, ...subordinateIds(users, user.id)].reduce(
-    (sum, id) => sum + (stats.get(id)?.wonMonth ?? 0),
+    .filter((u) => u.managerId === user.id && u.active)
+    .sort(
+      (a, b) =>
+        ROLE_LEVEL[a.role as Role] - ROLE_LEVEL[b.role as Role] ||
+        a.name.localeCompare(b.name),
+    );
+  const s = user.stats ?? {
+    leads: 0,
+    openDeals: 0,
+    securedValue: 0,
+    securedMonth: 0,
+  };
+  const subtreeMonth = [user.id, ...subtreeIds(users, user.id)].reduce(
+    (sum, id) =>
+      sum + (users.find((u) => u.id === id)?.stats?.securedMonth ?? 0),
     0,
   );
   const target = targets[user.id] ?? 0;
-  const attainment =
-    target > 0 ? Math.round((subtreeWonMonth / target) * 100) : 0;
+  const attainment = target > 0 ? Math.round((subtreeMonth / target) * 100) : 0;
 
   return (
     <div className={cn(depth > 0 && 'ml-4 border-l pl-4 md:ml-6 md:pl-6')}>
@@ -115,7 +113,9 @@ function MemberNode({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <p className="font-medium">{user.name}</p>
-            <Badge variant="secondary">{ROLE_LABELS[user.role]}</Badge>
+            <Badge variant="secondary">
+              {ROLE_LABELS[user.role as Role]}
+            </Badge>
             {user.id === currentUserId && (
               <Badge className="bg-primary/15 text-primary hover:bg-primary/15">
                 You
@@ -136,8 +136,8 @@ function MemberNode({
             <p className="text-muted-foreground">Open deals</p>
           </div>
           <div>
-            <p className="font-semibold">{formatINR(s.wonValue)}</p>
-            <p className="text-muted-foreground">Won</p>
+            <p className="font-semibold">{formatINR(s.securedValue)}</p>
+            <p className="text-muted-foreground">Secured</p>
           </div>
         </div>
         {target > 0 && (
@@ -145,8 +145,7 @@ function MemberNode({
             <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
               <span>Monthly target</span>
               <span className="tabular-nums">
-                {formatINR(subtreeWonMonth)} / {formatINR(target)} ·{' '}
-                {attainment}%
+                {formatINR(subtreeMonth)} / {formatINR(target)} · {attainment}%
               </span>
             </div>
             <div className="h-1.5 rounded-full bg-muted">
@@ -166,7 +165,6 @@ function MemberNode({
           key={r.id}
           user={r}
           users={users}
-          stats={stats}
           targets={targets}
           currentUserId={currentUserId}
           depth={depth + 1}
@@ -185,82 +183,46 @@ export default function TeamPage() {
 }
 
 function TeamPageContent() {
-  const { state, currentUser, addMember } = useStore();
-  const [open, setOpen] = useState(false);
+  const { data: me } = useMe();
+  const { data: team, isLoading } = useTeam();
+  const addMember = useAddMember();
 
-  const {
-    register,
-    handleSubmit,
-    setValue,
-    watch,
-    reset,
-    formState: { errors },
-  } = useForm<MemberFormValues>({
-    resolver: zodResolver(memberSchema),
-    defaultValues: {
-      name: '',
-      email: '',
-      role: '',
-      managerId: currentUser?.id ?? '',
-      region: currentUser?.region ?? '',
-      title: '',
-    },
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({
+    name: '',
+    email: '',
+    role: '' as Role | '',
+    managerId: '',
+    region: '',
+    title: '',
   });
 
-  const stats = useMemo(() => {
-    const map = new Map<string, MemberStats>();
-    for (const u of state.users) {
-      map.set(u.id, { leads: 0, openDeals: 0, wonValue: 0, wonMonth: 0 });
-    }
-    const now = new Date();
-    for (const lead of state.leads) {
-      const s = map.get(lead.ownerId);
-      if (s) s.leads += 1;
-    }
-    for (const deal of state.deals) {
-      const s = map.get(deal.ownerId);
-      if (!s) continue;
-      if (deal.stage === 'won') {
-        s.wonValue += deal.value;
-        if (deal.closedAt && isSameMonth(new Date(deal.closedAt), now)) {
-          s.wonMonth += deal.value;
-        }
-      } else if (deal.stage !== 'lost') {
-        s.openDeals += 1;
-      }
-    }
-    return map;
-  }, [state.users, state.leads, state.deals]);
+  const creatable = useMemo(() => {
+    if (!me) return [] as Role[];
+    return (Object.keys(ROLE_LEVEL) as Role[]).filter(
+      (r) => ROLE_LEVEL[r] > ROLE_LEVEL[me.role],
+    );
+  }, [me]);
 
-  if (!currentUser) return null;
+  if (!me) return null;
 
-  const chain = managerChain(state.users, currentUser).reverse();
-  const teamSize = subordinateIds(state.users, currentUser.id).length;
-  const visibleCount = visibleUserIds(state.users, currentUser).size;
-  const roles = creatableRoles(currentUser);
-
-  // Valid managers for the chosen role: visible members whose level is
-  // strictly above the new member's level.
-  const chosenRole = watch('role') as Role | '';
-  const possibleManagers = state.users.filter(
-    (u) =>
-      visibleUserIds(state.users, currentUser).has(u.id) &&
-      chosenRole &&
-      ROLE_LEVEL[u.role] < ROLE_LEVEL[chosenRole as Role],
-  );
-
-  function onSubmit(values: MemberFormValues) {
-    addMember({
-      name: values.name,
-      email: values.email,
-      role: values.role as Role,
-      managerId: values.managerId,
-      region: values.region,
-      title: values.title,
-    });
-    reset();
-    setOpen(false);
+  if (isLoading || !team) {
+    return (
+      <div className="space-y-4">
+        <div className="h-10 w-48 animate-pulse rounded bg-muted" />
+        <div className="h-72 animate-pulse rounded-lg bg-muted" />
+      </div>
+    );
   }
+
+  const self = team.users.find((u) => u.id === me.id);
+  const chain = [...team.chain].reverse();
+  const possibleManagers = form.role
+    ? team.users.filter(
+        (u) =>
+          u.active && ROLE_LEVEL[u.role as Role] < ROLE_LEVEL[form.role as Role],
+      )
+    : [];
 
   return (
     <div className="space-y-4">
@@ -268,11 +230,11 @@ function TeamPageContent() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Team</h1>
           <p className="text-sm text-muted-foreground">
-            Your slice of the workforce hierarchy — {visibleCount} member
-            {visibleCount > 1 ? 's' : ''} visible, {teamSize} reporting to you.
+            Your slice of the workforce hierarchy — {team.users.length} member
+            {team.users.length > 1 ? 's' : ''} visible.
           </p>
         </div>
-        {canManageWorkforce(currentUser) && (
+        {hasCapability(me.role, 'manage_users') && (
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button>
@@ -285,109 +247,127 @@ function TeamPageContent() {
                 <DialogTitle>Add workforce member</DialogTitle>
                 <DialogDescription>
                   You can add roles below your own level (
-                  {ROLE_LABELS[currentUser.role]}).
+                  {ROLE_LABELS[me.role]}). New members sign in with the demo
+                  password until invites land.
                 </DialogDescription>
               </DialogHeader>
-              <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+              <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
-                    <Label htmlFor="m-name">Name *</Label>
-                    <Input id="m-name" {...register('name')} />
-                    {errors.name && (
-                      <p className="text-xs text-destructive">
-                        {errors.name.message}
-                      </p>
-                    )}
+                    <Label>Name *</Label>
+                    <Input
+                      value={form.name}
+                      onChange={(e) =>
+                        setForm({ ...form, name: e.target.value })
+                      }
+                    />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="m-email">Email *</Label>
-                    <Input id="m-email" type="email" {...register('email')} />
-                    {errors.email && (
-                      <p className="text-xs text-destructive">
-                        {errors.email.message}
-                      </p>
-                    )}
+                    <Label>Email *</Label>
+                    <Input
+                      type="email"
+                      value={form.email}
+                      onChange={(e) =>
+                        setForm({ ...form, email: e.target.value })
+                      }
+                    />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <Label>Role *</Label>
                     <Select
-                      value={chosenRole}
-                      onValueChange={(v) => {
-                        setValue('role', v, { shouldValidate: true });
-                        setValue('managerId', '');
-                      }}
+                      value={form.role}
+                      onValueChange={(v) =>
+                        setForm({ ...form, role: v as Role, managerId: '' })
+                      }
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="Select role" />
                       </SelectTrigger>
                       <SelectContent>
-                        {roles.map((r) => (
+                        {creatable.map((r) => (
                           <SelectItem key={r} value={r}>
                             {ROLE_LABELS[r]}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    {errors.role && (
-                      <p className="text-xs text-destructive">
-                        {errors.role.message}
-                      </p>
-                    )}
                   </div>
                   <div className="space-y-1.5">
                     <Label>Reports to *</Label>
                     <Select
-                      value={watch('managerId')}
-                      onValueChange={(v) =>
-                        setValue('managerId', v, { shouldValidate: true })
-                      }
+                      value={form.managerId}
+                      onValueChange={(v) => setForm({ ...form, managerId: v })}
                     >
-                      <SelectTrigger disabled={!chosenRole}>
+                      <SelectTrigger disabled={!form.role}>
                         <SelectValue
-                          placeholder={chosenRole ? 'Select manager' : 'Pick role first'}
+                          placeholder={
+                            form.role ? 'Select manager' : 'Pick role first'
+                          }
                         />
                       </SelectTrigger>
                       <SelectContent>
                         {possibleManagers.map((u) => (
                           <SelectItem key={u.id} value={u.id}>
-                            {u.name} ({ROLE_LABELS[u.role]})
+                            {u.name} ({ROLE_LABELS[u.role as Role]})
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    {errors.managerId && (
-                      <p className="text-xs text-destructive">
-                        {errors.managerId.message}
-                      </p>
-                    )}
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
-                    <Label htmlFor="m-region">Region *</Label>
-                    <Input id="m-region" {...register('region')} />
-                    {errors.region && (
-                      <p className="text-xs text-destructive">
-                        {errors.region.message}
-                      </p>
-                    )}
+                    <Label>Region *</Label>
+                    <Input
+                      value={form.region}
+                      onChange={(e) =>
+                        setForm({ ...form, region: e.target.value })
+                      }
+                    />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="m-title">Job title *</Label>
-                    <Input id="m-title" {...register('title')} />
-                    {errors.title && (
-                      <p className="text-xs text-destructive">
-                        {errors.title.message}
-                      </p>
-                    )}
+                    <Label>Job title *</Label>
+                    <Input
+                      value={form.title}
+                      onChange={(e) =>
+                        setForm({ ...form, title: e.target.value })
+                      }
+                    />
                   </div>
                 </div>
-                <DialogFooter>
-                  <Button type="submit">Add member</Button>
-                </DialogFooter>
-              </form>
+              </div>
+              <DialogFooter>
+                <Button
+                  disabled={
+                    !form.name.trim() ||
+                    !form.email.trim() ||
+                    !form.role ||
+                    !form.managerId ||
+                    !form.region.trim() ||
+                    !form.title.trim() ||
+                    addMember.isPending
+                  }
+                  onClick={() =>
+                    addMember.mutate(form, {
+                      onSuccess: () => {
+                        setForm({
+                          name: '',
+                          email: '',
+                          role: '',
+                          managerId: '',
+                          region: '',
+                          title: '',
+                        });
+                        setOpen(false);
+                      },
+                    })
+                  }
+                >
+                  Add member
+                </Button>
+              </DialogFooter>
             </DialogContent>
           </Dialog>
         )}
@@ -409,7 +389,7 @@ function TeamPageContent() {
                     <UserRound className="h-3.5 w-3.5 text-muted-foreground" />
                     {m.name}
                     <span className="text-xs text-muted-foreground">
-                      {ROLE_LABELS[m.role]}
+                      {ROLE_LABELS[m.role as Role]}
                     </span>
                   </span>
                 </span>
@@ -431,14 +411,15 @@ function TeamPageContent() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <MemberNode
-            user={currentUser}
-            users={state.users}
-            stats={stats}
-            targets={state.targets}
-            currentUserId={currentUser.id}
-            depth={0}
-          />
+          {self && (
+            <MemberNode
+              user={self}
+              users={team.users}
+              targets={team.targets}
+              currentUserId={me.id}
+              depth={0}
+            />
+          )}
         </CardContent>
       </Card>
     </div>

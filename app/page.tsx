@@ -12,7 +12,7 @@ import {
   WifiOff,
   Workflow,
 } from 'lucide-react';
-import { useStore } from '@/lib/store';
+import { useMe } from '@/lib/api/hooks';
 import { postLoginRoute } from '@/lib/policy';
 import { Button } from '@/components/ui/button';
 
@@ -40,10 +40,9 @@ const FEATURES = [
 ];
 
 export default function LandingPage() {
-  const { hydrated, currentUser } = useStore();
+  const { data: currentUser } = useMe();
 
-  const appHref =
-    hydrated && currentUser ? postLoginRoute(currentUser.role) : '/login';
+  const appHref = currentUser ? postLoginRoute(currentUser.role) : '/login';
 
   return (
     <div className="min-h-screen bg-background">
@@ -56,7 +55,7 @@ export default function LandingPage() {
         </div>
         <Button asChild>
           <Link href={appHref}>
-            {hydrated && currentUser ? 'Open app' : 'Sign in'}
+            {currentUser ? 'Open app' : 'Sign in'}
             <ArrowRight />
           </Link>
         </Button>
@@ -80,7 +79,7 @@ export default function LandingPage() {
           <div className="mt-8 flex justify-center gap-3">
             <Button size="lg" asChild>
               <Link href={appHref}>
-                {hydrated && currentUser ? 'Open the app' : 'Sign in to demo'}
+                {currentUser ? 'Open the app' : 'Sign in to demo'}
                 <ArrowRight />
               </Link>
             </Button>

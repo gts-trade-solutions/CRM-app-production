@@ -1,12 +1,18 @@
 'use client';
 
-// First-run checklist: teaches the core loop per role, auto-checks off as
-// real data appears, dismissible per user. Shown on the dashboard until
-// complete or dismissed.
+// First-run checklist — API-backed, auto-checks off as real data appears.
+// Dismissal is a UI preference and stays in localStorage per user.
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { CheckCircle2, Circle, X } from 'lucide-react';
-import { useStore } from '@/lib/store';
+import {
+  useDashboardStats,
+  useProducts,
+  useSettings,
+  useTeam,
+} from '@/lib/api/crm-hooks';
+import { useActivities, useMe } from '@/lib/api/hooks';
 import { hasCapability } from '@/lib/policy';
 import { cn } from '@/lib/utils';
 import { Card, CardContent } from '@/components/ui/card';
@@ -17,69 +23,92 @@ interface Step {
   href: string;
 }
 
+const DISMISS_KEY = 'sf-onboarding-dismissed';
+
 export function OnboardingChecklist() {
-  const { state, currentUser, dismissOnboarding } = useStore();
-  if (!currentUser) return null;
-  if (state.onboardingDismissed[currentUser.id]) return null;
+  const { data: me } = useMe();
+  const { data: stats } = useDashboardStats();
+  const { data: myActivities } = useActivities({ scope: 'mine' });
+  const isAdmin = me ? hasCapability(me.role, 'view_admin') : false;
+  const { data: products } = useProducts();
+  const { data: settings } = useSettings();
+  const { data: team } = useTeam();
+  const [dismissed, setDismissed] = useState(true);
 
-  const mine = {
-    leads: state.leads.filter((l) => l.ownerId === currentUser.id),
-    activities: state.salesActivities.filter(
-      (a) => a.ownerId === currentUser.id,
-    ),
-    deals: state.deals.filter((d) => d.ownerId === currentUser.id),
-  };
+  useEffect(() => {
+    if (!me) return;
+    try {
+      const raw = window.localStorage.getItem(DISMISS_KEY);
+      const map = raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+      setDismissed(!!map[me.id]);
+    } catch {
+      setDismissed(false);
+    }
+  }, [me]);
 
-  const isAdmin = hasCapability(currentUser.role, 'view_admin');
+  if (!me || dismissed || !stats) return null;
 
   const steps: Step[] = isAdmin
     ? [
         {
           label: 'Review monthly targets',
-          done: Object.keys(state.targets).length > 0,
+          done: Object.keys(team?.targets ?? {}).length > 0,
           href: '/admin',
         },
         {
           label: 'Check the product catalogue',
-          done: state.products.length > 0,
+          done: (products ?? []).length > 0,
           href: '/admin',
         },
         {
           label: 'Set your organisation details for quotations',
-          done: !!state.orgSettings.companyName,
+          done: !!settings?.org?.companyName,
           href: '/admin',
         },
         {
           label: 'Review the team hierarchy',
-          done: state.users.length > 1,
+          done: (team?.users ?? []).length > 1,
           href: '/team',
         },
       ]
     : [
         {
           label: 'Capture your first lead',
-          done: mine.leads.length > 0,
+          done: stats.leads.total > 0,
           href: '/leads',
         },
         {
           label: 'Log a call or schedule a follow-up',
-          done: mine.activities.length > 0,
+          done: (myActivities ?? []).length > 0,
           href: '/activities',
         },
         {
           label: 'Convert a qualified lead into a deal',
-          done: mine.leads.some((l) => l.status === 'converted'),
+          done: stats.leads.converted > 0,
           href: '/leads',
         },
         {
           label: 'Secure your first order',
-          done: mine.deals.some((d) => d.stage === 'won'),
+          done: stats.pipeline.securedCount > 0,
           href: '/pipeline',
         },
       ];
 
   const doneCount = steps.filter((s) => s.done).length;
   if (doneCount === steps.length) return null;
+
+  function dismiss() {
+    if (!me) return;
+    try {
+      const raw = window.localStorage.getItem(DISMISS_KEY);
+      const map = raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+      map[me.id] = true;
+      window.localStorage.setItem(DISMISS_KEY, JSON.stringify(map));
+    } catch {
+      // storage unavailable — dismiss for the session only
+    }
+    setDismissed(true);
+  }
 
   return (
     <Card className="border-primary/30 bg-primary/5">
@@ -94,7 +123,7 @@ export function OnboardingChecklist() {
             </p>
           </div>
           <button
-            onClick={dismissOnboarding}
+            onClick={dismiss}
             aria-label="Dismiss checklist"
             className="text-muted-foreground hover:text-foreground"
           >

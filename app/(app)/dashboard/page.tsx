@@ -1,18 +1,9 @@
 'use client';
 
-// Role-scoped dashboard: every number is computed over the records the
-// signed-in user is allowed to see (self + everyone below in the hierarchy).
+// Role-scoped dashboard — all aggregates computed in SQL on the server.
 
-import { useMemo } from 'react';
 import Link from 'next/link';
-import {
-  format,
-  isPast,
-  isSameMonth,
-  isToday,
-  startOfMonth,
-  subMonths,
-} from 'date-fns';
+import { format, isPast, isToday } from 'date-fns';
 import {
   Activity as ActivityIcon,
   Circle,
@@ -33,9 +24,13 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { useStore } from '@/lib/store';
-import { visibleUserIds } from '@/lib/rbac';
-import { LeadSource, ROLE_LABELS, SOURCE_CONFIG } from '@/lib/types';
+import { useDashboardStats } from '@/lib/api/crm-hooks';
+import {
+  useActivities,
+  useMe,
+  useToggleActivity,
+} from '@/lib/api/hooks';
+import { ROLE_LABELS } from '@/lib/types';
 import { formatINR } from '@/lib/utils';
 import {
   Card,
@@ -65,7 +60,9 @@ function ChartTooltip({
       <p className="font-medium">{label}</p>
       {payload.map((p, i) => (
         <p key={i} className="text-muted-foreground">
-          {money ? formatINR(p.value) : `${p.value} lead${p.value === 1 ? '' : 's'}`}
+          {money
+            ? formatINR(p.value)
+            : `${p.value} lead${p.value === 1 ? '' : 's'}`}
         </p>
       ))}
     </div>
@@ -98,136 +95,64 @@ function StatTile({
 }
 
 export default function DashboardPage() {
-  const { state, currentUser, stages, toggleActivityComplete } = useStore();
+  const { data: me } = useMe();
+  const { data: stats, isLoading } = useDashboardStats();
+  const { data: myActivities } = useActivities({ scope: 'mine' });
+  const toggle = useToggleActivity();
 
-  const visible = useMemo(
-    () =>
-      currentUser
-        ? visibleUserIds(state.users, currentUser)
-        : new Set<string>(),
-    [state.users, currentUser],
-  );
+  if (!me) return null;
 
-  const leads = useMemo(
-    () => state.leads.filter((l) => visible.has(l.ownerId)),
-    [state.leads, visible],
-  );
-  const deals = useMemo(
-    () => state.deals.filter((d) => visible.has(d.ownerId) && !d.archived),
-    [state.deals, visible],
-  );
-
-  const openDeals = deals.filter(
-    (d) => d.stage !== 'won' && d.stage !== 'lost',
-  );
-  const wonDeals = deals.filter((d) => d.stage === 'won');
-  const openValue = openDeals.reduce((s, d) => s + d.value, 0);
-  const wonValue = wonDeals.reduce((s, d) => s + d.value, 0);
-  const convertedCount = leads.filter((l) => l.status === 'converted').length;
+  const isRep = me.role === 'sales_rep';
   const conversionRate =
-    leads.length > 0 ? Math.round((convertedCount / leads.length) * 100) : 0;
-
-  // Leads by source, colored by channel (online = blue, offline = orange).
-  const sourceData = useMemo(() => {
-    const counts = new Map<LeadSource, number>();
-    for (const l of leads) {
-      counts.set(l.source, (counts.get(l.source) ?? 0) + 1);
-    }
-    return Array.from(counts.entries())
-      .map(([source, count]) => ({
-        name: SOURCE_CONFIG[source].label,
-        channel: SOURCE_CONFIG[source].channel,
-        count,
-      }))
-      .sort((a, b) => b.count - a.count);
-  }, [leads]);
-
-  const onlineCount = leads.filter(
-    (l) => SOURCE_CONFIG[l.source].channel === 'online',
-  ).length;
-  const offlineCount = leads.length - onlineCount;
-
-  // Won revenue per month, last 6 months.
-  const revenueData = useMemo(() => {
-    const months: { key: string; name: string; value: number }[] = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = startOfMonth(subMonths(new Date(), i));
-      months.push({ key: format(d, 'yyyy-MM'), name: format(d, 'MMM'), value: 0 });
-    }
-    const byKey = new Map(months.map((m) => [m.key, m]));
-    for (const deal of wonDeals) {
-      if (!deal.closedAt) continue;
-      const key = format(new Date(deal.closedAt), 'yyyy-MM');
-      const bucket = byKey.get(key);
-      if (bucket) bucket.value += deal.value;
-    }
-    return months;
-  }, [wonDeals]);
-
-  // Open pipeline value by stage (ordinal ramp).
-  const stageData = useMemo(() => {
-    const keys = ['qualification', 'proposal', 'negotiation'] as const;
-    return keys.map((key) => ({
-      name: stages[key].label,
-      value: openDeals
-        .filter((d) => d.stage === key)
-        .reduce((sum, d) => sum + d.value, 0),
-    }));
-  }, [openDeals, stages]);
-
-  // Monthly quota attainment: won value in scope this month vs own target.
-  const monthWon = useMemo(
-    () =>
-      wonDeals
-        .filter(
-          (d) => d.closedAt && isSameMonth(new Date(d.closedAt), new Date()),
+    stats && stats.leads.total > 0
+      ? Math.round((stats.leads.converted / stats.leads.total) * 100)
+      : 0;
+  const attainment =
+    stats && stats.monthTarget.target > 0
+      ? Math.round(
+          (stats.monthTarget.secured / stats.monthTarget.target) * 100,
         )
-        .reduce((s, d) => s + d.value, 0),
-    [wonDeals],
-  );
-  const target = currentUser ? state.targets[currentUser.id] ?? 0 : 0;
-  const attainment = target > 0 ? Math.round((monthWon / target) * 100) : 0;
+      : 0;
 
-  // The rep's working list: own overdue + due-today activities.
-  const dueActivities = useMemo(() => {
-    if (!currentUser) return [];
-    return state.salesActivities
-      .filter(
-        (a) =>
-          a.ownerId === currentUser.id &&
-          a.kind !== 'note' &&
-          !a.completedAt &&
-          a.dueAt &&
-          (isToday(new Date(a.dueAt)) || isPast(new Date(a.dueAt))),
-      )
-      .sort(
-        (a, b) => new Date(a.dueAt!).getTime() - new Date(b.dueAt!).getTime(),
-      )
-      .slice(0, 6);
-  }, [state.salesActivities, currentUser]);
+  const dueActivities = (myActivities ?? [])
+    .filter(
+      (a) =>
+        a.kind !== 'note' &&
+        !a.completedAt &&
+        a.dueAt &&
+        (isToday(new Date(a.dueAt)) || isPast(new Date(a.dueAt))),
+    )
+    .sort((a, b) => new Date(a.dueAt!).getTime() - new Date(b.dueAt!).getTime())
+    .slice(0, 6);
 
-  const recentActivities = useMemo(() => {
-    const userById = new Map(state.users.map((u) => [u.id, u]));
-    return state.activities
-      .filter((a) => visible.has(a.userId))
-      .slice(0, 8)
-      .map((a) => ({ ...a, userName: userById.get(a.userId)?.name ?? '—' }));
-  }, [state.activities, state.users, visible]);
-
-  if (!currentUser) return null;
-
-  const isRep = currentUser.role === 'sales_rep';
+  if (isLoading || !stats) {
+    return (
+      <div className="space-y-4">
+        <div className="h-10 w-64 animate-pulse rounded bg-muted" />
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="h-28 animate-pulse rounded-lg bg-muted" />
+          ))}
+        </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          {[0, 1].map((i) => (
+            <div key={i} className="h-72 animate-pulse rounded-lg bg-muted" />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">
-          Welcome, {currentUser.name.split(' ')[0]}
+          Welcome, {me.name.split(' ')[0]}
         </h1>
         <p className="text-sm text-muted-foreground">
           {isRep
             ? 'Your personal view — leads, follow-ups and pipeline you own.'
-            : `${ROLE_LABELS[currentUser.role]} view — ${visible.size} workforce member${visible.size > 1 ? 's' : ''} in scope.`}
+            : `${ROLE_LABELS[me.role]} view — everything in your scope.`}
         </p>
       </div>
 
@@ -237,26 +162,26 @@ export default function DashboardPage() {
         <StatTile
           icon={Users}
           label="Leads"
-          value={String(leads.length)}
-          hint={`${onlineCount} online · ${offlineCount} offline`}
+          value={String(stats.leads.total)}
+          hint={`${stats.leads.online} online · ${stats.leads.offline} offline`}
         />
         <StatTile
           icon={Target}
           label="Conversion rate"
           value={`${conversionRate}%`}
-          hint={`${convertedCount} of ${leads.length} leads converted`}
+          hint={`${stats.leads.converted} of ${stats.leads.total} leads converted`}
         />
         <StatTile
           icon={TrendingUp}
           label="Open pipeline"
-          value={formatINR(openValue)}
-          hint={`${openDeals.length} active deal${openDeals.length === 1 ? '' : 's'}`}
+          value={formatINR(stats.pipeline.openValue)}
+          hint={`${stats.pipeline.openCount} active deal${stats.pipeline.openCount === 1 ? '' : 's'}`}
         />
         <StatTile
           icon={IndianRupee}
           label="Revenue secured"
-          value={formatINR(wonValue)}
-          hint={`${wonDeals.length} order${wonDeals.length === 1 ? '' : 's'} secured`}
+          value={formatINR(stats.pipeline.securedValue)}
+          hint={`${stats.pipeline.securedCount} order${stats.pipeline.securedCount === 1 ? '' : 's'} secured`}
         />
       </div>
 
@@ -270,9 +195,11 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             <div className="flex items-end justify-between">
-              <p className="text-2xl font-semibold">{formatINR(monthWon)}</p>
+              <p className="text-2xl font-semibold">
+                {formatINR(stats.monthTarget.secured)}
+              </p>
               <p className="text-sm text-muted-foreground">
-                of {formatINR(target)} · {attainment}%
+                of {formatINR(stats.monthTarget.target)} · {attainment}%
               </p>
             </div>
             <div
@@ -293,7 +220,7 @@ export default function DashboardPage() {
             <p className="mt-2 text-xs text-muted-foreground">
               {attainment >= 100
                 ? 'Target achieved — great month.'
-                : `${formatINR(Math.max(0, target - monthWon))} to go this month.`}
+                : `${formatINR(Math.max(0, stats.monthTarget.target - stats.monthTarget.secured))} to go this month.`}
             </p>
           </CardContent>
         </Card>
@@ -327,7 +254,9 @@ export default function DashboardPage() {
                   return (
                     <li key={a.id} className="flex items-start gap-2.5 text-sm">
                       <button
-                        onClick={() => toggleActivityComplete(a.id)}
+                        onClick={() =>
+                          toggle.mutate({ id: a.id, completed: true })
+                        }
                         aria-label="Mark done"
                         className="mt-0.5 shrink-0 text-muted-foreground transition-colors hover:text-primary"
                       >
@@ -380,14 +309,11 @@ export default function DashboardPage() {
             </div>
             <ResponsiveContainer width="100%" height={260}>
               <BarChart
-                data={sourceData}
+                data={stats.sourceData}
                 layout="vertical"
                 margin={{ left: 8, right: 16 }}
               >
-                <CartesianGrid
-                  horizontal={false}
-                  stroke="var(--viz-grid)"
-                />
+                <CartesianGrid horizontal={false} stroke="var(--viz-grid)" />
                 <XAxis
                   type="number"
                   allowDecimals={false}
@@ -408,7 +334,7 @@ export default function DashboardPage() {
                   content={<ChartTooltip />}
                 />
                 <Bar dataKey="count" barSize={14} radius={[0, 4, 4, 0]}>
-                  {sourceData.map((entry, i) => (
+                  {stats.sourceData.map((entry, i) => (
                     <Cell
                       key={i}
                       fill={
@@ -433,7 +359,10 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={288}>
-              <LineChart data={revenueData} margin={{ left: 8, right: 16 }}>
+              <LineChart
+                data={stats.revenueByMonth}
+                margin={{ left: 8, right: 16 }}
+              >
                 <CartesianGrid vertical={false} stroke="var(--viz-grid)" />
                 <XAxis
                   dataKey="name"
@@ -472,7 +401,7 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={stageData} margin={{ left: 8, right: 16 }}>
+              <BarChart data={stats.stageData} margin={{ left: 8, right: 16 }}>
                 <CartesianGrid vertical={false} stroke="var(--viz-grid)" />
                 <XAxis
                   dataKey="name"
@@ -493,7 +422,7 @@ export default function DashboardPage() {
                   content={<ChartTooltip money />}
                 />
                 <Bar dataKey="value" barSize={40} radius={[4, 4, 0, 0]}>
-                  {stageData.map((_, i) => (
+                  {stats.stageData.map((_, i) => (
                     <Cell key={i} fill={ORDINAL[i]} />
                   ))}
                 </Bar>
@@ -510,13 +439,13 @@ export default function DashboardPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {recentActivities.length === 0 ? (
+            {stats.recent.length === 0 ? (
               <p className="py-6 text-center text-sm text-muted-foreground">
                 No activity yet.
               </p>
             ) : (
               <ul className="space-y-3">
-                {recentActivities.map((a) => (
+                {stats.recent.map((a) => (
                   <li key={a.id} className="flex items-start gap-3 text-sm">
                     <ActivityIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                     <div className="min-w-0">

@@ -1,16 +1,12 @@
 'use client';
 
-// Authenticated app chrome: sidebar navigation + topbar. Client-side auth
-// guard — redirects to /login when no user is selected.
+// Authenticated app chrome — session-backed (useMe). Redirects to /login
+// when the NextAuth session is missing or expired.
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import {
-  outboxCount,
-  useActivities,
-  useOutboxFlusher,
-} from '@/lib/api/hooks';
+import { signOut } from 'next-auth/react';
 import {
   BarChart3,
   Briefcase,
@@ -24,21 +20,24 @@ import {
   Megaphone,
   Moon,
   Network,
-  RotateCcw,
   Settings2,
   Sun,
   UserPlus,
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { GlobalSearch } from '@/components/global-search';
-import { NotificationsMenu } from '@/components/notifications-menu';
-import { Capability, hasCapability } from '@/lib/policy';
 import { useTheme } from 'next-themes';
-import { signOut } from 'next-auth/react';
-import { useStore } from '@/lib/store';
+import {
+  outboxCount,
+  useActivities,
+  useMe,
+  useOutboxFlusher,
+} from '@/lib/api/hooks';
+import { Capability, hasCapability } from '@/lib/policy';
 import { ROLE_LABELS } from '@/lib/types';
 import { cn, initials } from '@/lib/utils';
+import { GlobalSearch } from '@/components/global-search';
+import { NotificationsMenu } from '@/components/notifications-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -58,8 +57,6 @@ interface NavItem {
   capability?: Capability;
 }
 
-// Grouped, role-aware navigation — items render only when the policy
-// matrix grants the capability.
 const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: 'Work',
@@ -89,35 +86,39 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { hydrated, currentUser, online, logout, resetDemo } = useStore();
+  const { data: currentUser, isLoading, isError } = useMe();
   const pathname = usePathname();
   const router = useRouter();
   const { theme, setTheme } = useTheme();
   const { data: myActivities } = useActivities({ scope: 'mine' });
   const flushOutbox = useOutboxFlusher();
   const [outboxQueued, setOutboxQueued] = useState(0);
+  const [online, setOnline] = useState(true);
 
-  // Offline outbox: surface queued count app-wide, flush on reconnect.
   useEffect(() => {
+    setOnline(navigator.onLine);
     setOutboxQueued(outboxCount());
-    const onOnline = () =>
+    const onOnline = () => {
+      setOnline(true);
       flushOutbox().then(() => setOutboxQueued(outboxCount()));
+    };
+    const onOffline = () => setOnline(false);
     const interval = setInterval(() => setOutboxQueued(outboxCount()), 5000);
     window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
     return () => {
       window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
       clearInterval(interval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (hydrated && !currentUser) {
-      router.replace('/login');
-    }
-  }, [hydrated, currentUser, router]);
+    if (isError) router.replace('/login');
+  }, [isError, router]);
 
-  if (!hydrated || !currentUser) {
+  if (isLoading || !currentUser) {
     return (
       <div className="flex min-h-screen items-center justify-center text-muted-foreground">
         Loading…
@@ -125,10 +126,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const pendingCount = outboxQueued;
-
-  // Follow-ups needing attention today — surfaces on the My Day nav item
-  // so a rep sees their workload from anywhere in the app.
   const now = new Date();
   const dueCount = (myActivities ?? []).filter(
     (a) =>
@@ -152,7 +149,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <nav className="flex-1 space-y-4 overflow-y-auto p-3">
           {NAV_GROUPS.map((group) => {
             const items = group.items.filter(
-              (i) => !i.capability || hasCapability(currentUser.role, i.capability),
+              (i) =>
+                !i.capability || hasCapability(currentUser.role, i.capability),
             );
             if (items.length === 0) return null;
             return (
@@ -211,7 +209,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <GlobalSearch />
           <div className="flex-1" />
 
-          {/* Connectivity indicator drives the offline-lead story */}
           <Badge
             variant={online ? 'secondary' : 'destructive'}
             className="hidden gap-1.5 sm:inline-flex"
@@ -223,10 +220,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             )}
             {online ? 'Online' : 'Offline'}
           </Badge>
-          {pendingCount > 0 && (
+          {outboxQueued > 0 && (
             <Badge variant="outline" className="gap-1.5">
               <CloudOff className="h-3 w-3" />
-              {pendingCount} pending sync
+              {outboxQueued} pending sync
             </Badge>
           )}
 
@@ -258,15 +255,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </p>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={resetDemo}>
-                <RotateCcw />
-                Reset demo data
-              </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={async () => {
-                  // End the NextAuth session and the mock-store identity.
                   await signOut({ redirect: false });
-                  logout();
                   router.replace('/login');
                 }}
               >

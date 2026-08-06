@@ -10,9 +10,10 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { signIn } from 'next-auth/react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Building2, ChevronRight, LogIn } from 'lucide-react';
 import { toast } from 'sonner';
-import { useStore } from '@/lib/store';
+import { seedUsers } from '@/lib/mock-data';
 import { postLoginRoute } from '@/lib/policy';
 import { ROLE_LABELS, ROLE_LEVEL, User } from '@/lib/types';
 import { initials } from '@/lib/utils';
@@ -24,46 +25,40 @@ import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 
 export default function LoginPage() {
-  const { state, login, hydrated } = useStore();
   const router = useRouter();
+  const qc = useQueryClient();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-
-  const activeUsers = state.users.filter((u) => u.active !== false);
 
   /** Demo password shared by all seeded members (see prisma/seed.ts). */
   const DEMO_PASSWORD = 'demo123';
 
-  // Creates the real NextAuth session AND sets the mock-store identity —
-  // the bridge state while data still lives client-side (M3 removes the
-  // store half).
-  async function signInAs(user: User, password: string) {
+  async function doSignIn(userEmail: string, pass: string, role?: User['role']) {
     const result = await signIn('credentials', {
       redirect: false,
-      email: user.email,
-      password,
+      email: userEmail,
+      password: pass,
     });
     if (result?.error) {
       toast.error('Invalid email or password');
       return;
     }
-    login(user.id);
-    router.replace(postLoginRoute(user.role));
+    // A fresh session means every cached query belongs to someone else.
+    qc.clear();
+    router.replace(role ? postLoginRoute(role) : '/dashboard');
   }
 
   async function handleCredentials(e: React.FormEvent) {
     e.preventDefault();
-    const user = activeUsers.find(
+    const known = seedUsers.find(
       (u) => u.email.toLowerCase() === email.trim().toLowerCase(),
     );
-    if (!user) {
-      toast.error('No active member found with that email');
-      return;
-    }
-    await signInAs(user, password || DEMO_PASSWORD);
+    await doSignIn(email.trim(), password || DEMO_PASSWORD, known?.role);
   }
 
-  const sorted = [...activeUsers].sort(
+  // Persona grid comes from the static seed list — the same users the
+  // database is seeded with.
+  const sorted = [...seedUsers].sort(
     (a, b) =>
       ROLE_LEVEL[a.role] - ROLE_LEVEL[b.role] || a.name.localeCompare(b.name),
   );
@@ -134,16 +129,14 @@ export default function LoginPage() {
               My Day, managers on the team dashboard.
             </p>
           </div>
-          {!hydrated ? (
-            <p className="py-16 text-center text-sm text-muted-foreground">
-              Loading…
-            </p>
-          ) : (
+          {
             <ul className="grid gap-2 sm:grid-cols-2">
               {sorted.map((user) => (
                 <li key={user.id}>
                   <button
-                    onClick={() => signInAs(user, DEMO_PASSWORD)}
+                    onClick={() =>
+                      doSignIn(user.email, DEMO_PASSWORD, user.role)
+                    }
                     className="flex w-full items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent"
                   >
                     <Avatar className="h-9 w-9">
@@ -168,7 +161,7 @@ export default function LoginPage() {
                 </li>
               ))}
             </ul>
-          )}
+          }
         </div>
       </div>
     </div>
