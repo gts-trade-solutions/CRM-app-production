@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 3.9%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 96.1%;
+    --secondary-foreground: 0 0% 9%;
+    --muted: 0 0% 96.1%;
+    --muted-foreground: 0 0% 45.1%;
+    --accent: 0 0% 96.1%;
+    --accent-foreground: 0 0% 9%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 89.8%;
+    --input: 0 0% 89.8%;
+    --ring: 221 83% 53%;
+    --chart-1: 221 83% 53%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 43 74% 56%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 27 87% 57%;
+    --radius: 0.5rem;
+  }
+  .dark {
+    --background: 0 0% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 9%;
+    --secondary: 0 0% 14.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 14.9%;
+    --muted-foreground: 0 0% 63.9%;
+    --accent: 0 0% 14.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 14.9%;
+    --input: 0 0% 14.9%;
+    --ring: 217 91% 60%;
+    --chart-1: 217 91% 60%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 43 74% 66%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 27 87% 67%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Data-viz palette — validated reference palette (dataviz skill).
+   Categorical slots 1–2 (blue/orange) pass adjacent CVD + contrast gates in
+   both modes; ordinal blue ramp bounded per the ordinal rule. */
+:root {
+  --viz-cat-1: #2a78d6; /* online */
+  --viz-cat-2: #eb6834; /* offline */
+  --viz-ord-1: #6da7ec; /* ordinal blue 300 */
+  --viz-ord-2: #2a78d6; /* ordinal blue 450 */
+  --viz-ord-3: #184f95; /* ordinal blue 600 */
+  --viz-grid: #e1e0d9;
+  --viz-axis: #898781;
+}
+.dark {
+  --viz-cat-1: #3987e5;
+  --viz-cat-2: #d95926;
+  --viz-ord-1: #86b6ef; /* ordinal blue 250 */
+  --viz-ord-2: #3987e5; /* ordinal blue 400 */
+  --viz-ord-3: #1c5cab; /* ordinal blue 550 */
+  --viz-grid: #2c2c2a;
+  --viz-axis: #898781;
+}
+
+/* Hide horizontal scrollbar while keeping scrollability (kanban board). */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
