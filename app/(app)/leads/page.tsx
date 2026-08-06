@@ -1,11 +1,15 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+// Leads list — API-backed: server-side pagination, filtering and RBAC
+// scoping. The offline outbox flushes automatically on reconnect.
+
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { format } from 'date-fns';
 import {
   ArrowRightCircle,
+  ChevronLeft,
+  ChevronRight,
   CloudOff,
   FileUp,
   MoreHorizontal,
@@ -13,26 +17,28 @@ import {
   Plus,
   Search,
 } from 'lucide-react';
-import { useStore } from '@/lib/store';
-import { assignableUsers, visibleUserIds } from '@/lib/rbac';
-import { hasCapability } from '@/lib/policy';
 import {
-  Channel,
-  LEAD_STATUS_CONFIG,
-  Lead,
-  LeadStatus,
-  SOURCE_CONFIG,
-} from '@/lib/types';
+  WireLead,
+  useLeads,
+  useMe,
+  useApiUsers,
+  useConvertLead,
+  useOutboxFlusher,
+  useReassignLeads,
+  useUpdateLead,
+  outboxCount,
+} from '@/lib/api/hooks';
+import { api } from '@/lib/api/client';
+import { useQueryClient } from '@tanstack/react-query';
+import { hasCapability } from '@/lib/policy';
+import { LEAD_STATUS_CONFIG, LeadStatus, SOURCE_CONFIG } from '@/lib/types';
 import { cn, formatINR } from '@/lib/utils';
 import { leadScore, scoreTier } from '@/lib/scoring';
 import { ImportLeadsDialog } from '@/components/leads/import-dialog';
 import { LeadFormDialog } from '@/components/leads/lead-form-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-} from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -67,101 +73,82 @@ import {
   TableRow,
 } from '@/components/ui/table';
 
+/** Row-level status change without a per-row hook instance. */
+function useLeadStatusMutation() {
+  const qc = useQueryClient();
+  return async (leadId: string, status: LeadStatus) => {
+    await api(`/api/leads/${leadId}`, { method: 'PATCH', json: { status } });
+    qc.invalidateQueries({ queryKey: ['leads'] });
+  };
+}
+
 export default function LeadsPage() {
-  const { state, currentUser, setLeadStatus, convertLead, reassignLeads } =
-    useStore();
-  const router = useRouter();
+  const { data: me } = useMe();
+  const { data: users } = useApiUsers();
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | LeadStatus>('all');
+  const [channelFilter, setChannelFilter] = useState<'all' | 'online' | 'offline'>('all');
+  const [sortBy, setSortBy] = useState<'newest' | 'score'>('newest');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [reassignTo, setReassignTo] = useState('');
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | LeadStatus>('all');
-  const [channelFilter, setChannelFilter] = useState<'all' | Channel>('all');
-  const [sortBy, setSortBy] = useState<'newest' | 'score'>('newest');
-  const [converting, setConverting] = useState<Lead | null>(null);
+  const [converting, setConverting] = useState<WireLead | null>(null);
   const [dealTitle, setDealTitle] = useState('');
   const [dealValue, setDealValue] = useState('');
+  const [queued, setQueued] = useState(0);
 
-  const visible = useMemo(
-    () =>
-      currentUser
-        ? visibleUserIds(state.users, currentUser)
-        : new Set<string>(),
-    [state.users, currentUser],
-  );
+  const setStatus = useLeadStatusMutation();
+  const convert = useConvertLead();
+  const reassign = useReassignLeads();
+  const flushOutbox = useOutboxFlusher();
 
-  const userById = useMemo(
-    () => new Map(state.users.map((u) => [u.id, u])),
-    [state.users],
-  );
+  // Debounced server-side search.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedQ(search.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  // Activity count per lead feeds the engagement part of the score.
-  const activityCountByLead = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const a of state.salesActivities) {
-      if (a.relatedType !== 'lead') continue;
-      map.set(a.relatedId, (map.get(a.relatedId) ?? 0) + 1);
-    }
-    return map;
-  }, [state.salesActivities]);
+  // Offline outbox: show count, flush on reconnect.
+  useEffect(() => {
+    setQueued(outboxCount());
+    const onOnline = () => flushOutbox().then(() => setQueued(outboxCount()));
+    const interval = setInterval(() => setQueued(outboxCount()), 4000);
+    window.addEventListener('online', onOnline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const scoreById = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const l of state.leads) {
-      map.set(l.id, leadScore(l, activityCountByLead.get(l.id) ?? 0));
-    }
-    return map;
-  }, [state.leads, activityCountByLead]);
+  const { data, isLoading } = useLeads({
+    page,
+    status: statusFilter,
+    channel: channelFilter,
+    q: debouncedQ,
+  });
 
   const leads = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return state.leads
-      .filter((l) => visible.has(l.ownerId))
-      .filter((l) => statusFilter === 'all' || l.status === statusFilter)
-      .filter(
-        (l) =>
-          channelFilter === 'all' ||
-          SOURCE_CONFIG[l.source].channel === channelFilter,
-      )
-      .filter(
-        (l) =>
-          !q ||
-          l.name.toLowerCase().includes(q) ||
-          l.company.toLowerCase().includes(q) ||
-          l.email.toLowerCase().includes(q),
-      )
-      .sort((a, b) =>
-        sortBy === 'score'
-          ? (scoreById.get(b.id) ?? 0) - (scoreById.get(a.id) ?? 0)
-          : new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    const rows = data?.leads ?? [];
+    if (sortBy === 'score') {
+      return [...rows].sort(
+        (a, b) =>
+          leadScore(b, b.activityCount ?? 0) -
+          leadScore(a, a.activityCount ?? 0),
       );
-  }, [state.leads, visible, statusFilter, channelFilter, search, sortBy, scoreById]);
+    }
+    return rows;
+  }, [data, sortBy]);
 
-  const pendingCount = state.leads.filter(
-    (l) => l.pendingSync && visible.has(l.ownerId),
-  ).length;
+  if (!me) return null;
 
-  function openConvert(lead: Lead) {
-    setConverting(lead);
-    setDealTitle(
-      lead.company ? `${lead.company} — New opportunity` : `${lead.name} — New opportunity`,
-    );
-    setDealValue(String(lead.estimatedValue || ''));
-  }
-
-  function handleConvert() {
-    if (!converting) return;
-    const dealId = convertLead(converting.id, dealTitle, Number(dealValue) || 0);
-    setConverting(null);
-    // Land the rep on the new deal so the next action is obvious.
-    if (dealId) router.push(`/pipeline/${dealId}`);
-  }
-
-  if (!currentUser) return null;
-
-  const canReassign = hasCapability(currentUser.role, 'reassign_records');
-  const reassignTargets = assignableUsers(state.users, currentUser).filter(
-    (u) => u.active !== false,
-  );
+  const canReassign = hasCapability(me.role, 'reassign_records');
+  const reassignTargets = (users ?? []).filter((u) => u.active);
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
 
   function toggleSelect(id: string) {
     setSelected((prev) => {
@@ -170,6 +157,16 @@ export default function LeadsPage() {
       else next.add(id);
       return next;
     });
+  }
+
+  function openConvert(lead: WireLead) {
+    setConverting(lead);
+    setDealTitle(
+      lead.company
+        ? `${lead.company} — New opportunity`
+        : `${lead.name} — New opportunity`,
+    );
+    setDealValue(String(lead.estimatedValue || ''));
   }
 
   return (
@@ -201,11 +198,11 @@ export default function LeadsPage() {
         </div>
       </div>
 
-      {pendingCount > 0 && (
+      {queued > 0 && (
         <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
           <CloudOff className="h-4 w-4 shrink-0" />
-          {pendingCount} lead{pendingCount > 1 ? 's' : ''} captured offline —
-          will sync automatically when the connection returns.
+          {queued} lead{queued > 1 ? 's' : ''} captured offline — will sync
+          automatically when the connection returns.
         </div>
       )}
 
@@ -221,7 +218,10 @@ export default function LeadsPage() {
         </div>
         <Select
           value={statusFilter}
-          onValueChange={(v) => setStatusFilter(v as typeof statusFilter)}
+          onValueChange={(v) => {
+            setStatusFilter(v as typeof statusFilter);
+            setPage(1);
+          }}
         >
           <SelectTrigger className="w-[160px]">
             <SelectValue />
@@ -237,7 +237,10 @@ export default function LeadsPage() {
         </Select>
         <Select
           value={channelFilter}
-          onValueChange={(v) => setChannelFilter(v as typeof channelFilter)}
+          onValueChange={(v) => {
+            setChannelFilter(v as typeof channelFilter);
+            setPage(1);
+          }}
         >
           <SelectTrigger className="w-[150px]">
             <SelectValue />
@@ -262,7 +265,6 @@ export default function LeadsPage() {
         </Select>
       </div>
 
-      {/* Bulk reassignment toolbar */}
       {canReassign && selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border bg-card p-2.5">
           <Badge variant="secondary">{selected.size} selected</Badge>
@@ -280,20 +282,22 @@ export default function LeadsPage() {
           </Select>
           <Button
             size="sm"
-            disabled={!reassignTo}
-            onClick={() => {
-              reassignLeads(Array.from(selected), reassignTo);
-              setSelected(new Set());
-              setReassignTo('');
-            }}
+            disabled={!reassignTo || reassign.isPending}
+            onClick={() =>
+              reassign.mutate(
+                { leadIds: Array.from(selected), newOwnerId: reassignTo },
+                {
+                  onSuccess: () => {
+                    setSelected(new Set());
+                    setReassignTo('');
+                  },
+                },
+              )
+            }
           >
             Reassign
           </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => setSelected(new Set())}
-          >
+          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
             Clear
           </Button>
         </div>
@@ -335,7 +339,15 @@ export default function LeadsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {leads.length === 0 && (
+              {isLoading &&
+                [0, 1, 2, 3, 4].map((i) => (
+                  <TableRow key={`s-${i}`}>
+                    <TableCell colSpan={canReassign ? 9 : 8}>
+                      <div className="h-8 animate-pulse rounded bg-muted" />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              {!isLoading && leads.length === 0 && (
                 <TableRow>
                   <TableCell
                     colSpan={canReassign ? 9 : 8}
@@ -348,10 +360,9 @@ export default function LeadsPage() {
               {leads.map((lead) => {
                 const source = SOURCE_CONFIG[lead.source];
                 const status = LEAD_STATUS_CONFIG[lead.status];
-                const owner = userById.get(lead.ownerId);
                 const open =
                   lead.status !== 'converted' && lead.status !== 'disqualified';
-                const score = scoreById.get(lead.id) ?? 0;
+                const score = leadScore(lead, lead.activityCount ?? 0);
                 const tier = scoreTier(score);
                 return (
                   <TableRow key={lead.id}>
@@ -379,14 +390,8 @@ export default function LeadsPage() {
                             {lead.company || lead.email || lead.phone}
                           </p>
                         </div>
-                        {(lead.attachments?.length ?? 0) > 0 && (
+                        {(lead.attachmentCount ?? 0) > 0 && (
                           <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        )}
-                        {lead.pendingSync && (
-                          <Badge variant="outline" className="gap-1 text-amber-600">
-                            <CloudOff className="h-3 w-3" />
-                            queued
-                          </Badge>
                         )}
                       </div>
                     </TableCell>
@@ -394,8 +399,10 @@ export default function LeadsPage() {
                       {open ? (
                         <Badge
                           variant="outline"
-                          className={cn('border-transparent tabular-nums', tier.className)}
-                          title="Source quality + value + freshness + engagement"
+                          className={cn(
+                            'border-transparent tabular-nums',
+                            tier.className,
+                          )}
                         >
                           {tier.label} {score}
                         </Badge>
@@ -417,7 +424,7 @@ export default function LeadsPage() {
                       </div>
                     </TableCell>
                     <TableCell className="hidden text-sm lg:table-cell">
-                      {owner?.name ?? '—'}
+                      {lead.owner?.name ?? '—'}
                     </TableCell>
                     <TableCell>
                       <Badge
@@ -446,14 +453,14 @@ export default function LeadsPage() {
                           <DropdownMenuLabel>Update status</DropdownMenuLabel>
                           {open && lead.status !== 'contacted' && (
                             <DropdownMenuItem
-                              onClick={() => setLeadStatus(lead.id, 'contacted')}
+                              onClick={() => setStatus(lead.id, 'contacted')}
                             >
                               Mark contacted
                             </DropdownMenuItem>
                           )}
                           {open && lead.status !== 'qualified' && (
                             <DropdownMenuItem
-                              onClick={() => setLeadStatus(lead.id, 'qualified')}
+                              onClick={() => setStatus(lead.id, 'qualified')}
                             >
                               Mark qualified
                             </DropdownMenuItem>
@@ -468,7 +475,7 @@ export default function LeadsPage() {
                               <DropdownMenuItem
                                 className="text-destructive"
                                 onClick={() =>
-                                  setLeadStatus(lead.id, 'disqualified')
+                                  setStatus(lead.id, 'disqualified')
                                 }
                               >
                                 Disqualify
@@ -491,17 +498,43 @@ export default function LeadsPage() {
         </CardContent>
       </Card>
 
-      {/* Convert dialog: creates a contact + a deal in Qualification */}
-      <Dialog
-        open={!!converting}
-        onOpenChange={(o) => !o && setConverting(null)}
-      >
+      {/* Server-side pagination */}
+      <div className="flex items-center justify-between text-sm text-muted-foreground">
+        <span>
+          {data ? `${data.total} lead${data.total === 1 ? '' : 's'}` : ''}
+        </span>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page <= 1}
+            onClick={() => setPage((p) => p - 1)}
+          >
+            <ChevronLeft />
+            Prev
+          </Button>
+          <span className="tabular-nums">
+            {page} / {totalPages}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page >= totalPages}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next
+            <ChevronRight />
+          </Button>
+        </div>
+      </div>
+
+      <Dialog open={!!converting} onOpenChange={(o) => !o && setConverting(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Convert lead</DialogTitle>
             <DialogDescription>
-              Converting {converting?.name} creates a contact and opens a Cold
-              deal in the pipeline. You&apos;ll be taken straight to it.
+              Converting {converting?.name} creates a contact, links the
+              account, and opens a Cold deal — atomically, on the server.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -526,8 +559,18 @@ export default function LeadsPage() {
           </div>
           <DialogFooter>
             <Button
-              onClick={handleConvert}
-              disabled={!dealTitle.trim()}
+              disabled={!dealTitle.trim() || convert.isPending}
+              onClick={() => {
+                if (!converting) return;
+                convert.mutate(
+                  {
+                    leadId: converting.id,
+                    dealTitle,
+                    value: Number(dealValue) || 0,
+                  },
+                  { onSuccess: () => setConverting(null) },
+                );
+              }}
             >
               Convert
             </Button>

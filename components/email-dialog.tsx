@@ -1,12 +1,12 @@
 'use client';
 
-// Demo email composer: "sends" an email and logs it as a completed email
-// activity on the record's timeline. A real deployment wires this to an
-// email service (SES/SendGrid) or a mailbox sync.
+// Demo email composer — API-backed: "sends" and logs a completed email
+// activity on the record's timeline. Real provider send lands in M4 (SES).
 
 import { useState } from 'react';
 import { Send } from 'lucide-react';
-import { useStore } from '@/lib/store';
+import { toast } from 'sonner';
+import { useCreateActivity } from '@/lib/api/hooks';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -32,24 +32,31 @@ export function EmailDialog({
   to: string;
   trigger: React.ReactNode;
 }) {
-  const { addSalesActivity } = useStore();
+  const createActivity = useCreateActivity();
   const [open, setOpen] = useState(false);
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
 
   function send() {
     if (!subject.trim()) return;
-    addSalesActivity({
-      kind: 'email',
-      subject: `Email: ${subject.trim()}`,
-      notes: `To ${to}${body.trim() ? ` — ${body.trim()}` : ''}`,
-      relatedType,
-      relatedId,
-      completedAt: new Date().toISOString(),
-    });
-    setSubject('');
-    setBody('');
-    setOpen(false);
+    createActivity.mutate(
+      {
+        kind: 'email',
+        subject: `Email: ${subject.trim()}`,
+        notes: `To ${to}${body.trim() ? ` — ${body.trim()}` : ''}`,
+        relatedType,
+        relatedId,
+        completedAt: new Date().toISOString(),
+      },
+      {
+        onSuccess: () => {
+          toast.success('Email logged to the timeline');
+          setSubject('');
+          setBody('');
+          setOpen(false);
+        },
+      },
+    );
   }
 
   return (
@@ -87,7 +94,10 @@ export function EmailDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button onClick={send} disabled={!subject.trim()}>
+          <Button
+            onClick={send}
+            disabled={!subject.trim() || createActivity.isPending}
+          >
             <Send />
             Send & log
           </Button>

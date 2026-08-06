@@ -1,20 +1,22 @@
 'use client';
 
-// Schedule an activity (call / meeting / task / email) or log a note.
-// - "Assign to" lets managers delegate down their hierarchy (the assignee
-//   gets a notification); reps only see themselves.
-// - When no related record is passed (e.g. from My Day), a record picker
-//   offers the open leads and deals in the actor's scope.
+// Schedule an activity or log a note — API-backed. Managers (per the
+// policy matrix) can delegate to anyone in their scope; the record picker
+// appears when no related record is passed (e.g. from My Day).
 
 import { useMemo, useState } from 'react';
 import { Check, MapPin } from 'lucide-react';
 import { toast } from 'sonner';
-import { useStore } from '@/lib/store';
-import { assignableUsers, visibleUserIds } from '@/lib/rbac';
 import {
-  ACTIVITY_KIND_LABELS,
-  SalesActivityKind,
-} from '@/lib/types';
+  useApiUsers,
+  useCreateActivity,
+  useLeads,
+  useMe,
+} from '@/lib/api/hooks';
+import { api } from '@/lib/api/client';
+import { useQuery } from '@tanstack/react-query';
+import { hasCapability } from '@/lib/policy';
+import { ACTIVITY_KIND_LABELS, SalesActivityKind } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -36,6 +38,12 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 
+interface WireDealLite {
+  id: string;
+  title: string;
+  stage: string;
+}
+
 export function ActivityDialog({
   relatedType,
   relatedId,
@@ -47,19 +55,54 @@ export function ActivityDialog({
   relatedName?: string;
   trigger: React.ReactNode;
 }) {
-  const { state, currentUser, addSalesActivity } = useStore();
+  const { data: me } = useMe();
+  const { data: users } = useApiUsers();
+  const createActivity = useCreateActivity();
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState<SalesActivityKind>('call');
   const [subject, setSubject] = useState('');
   const [dueAt, setDueAt] = useState('');
   const [notes, setNotes] = useState('');
-  const [ownerId, setOwnerId] = useState(currentUser?.id ?? '');
-  // Record picker value, encoded as "lead:<id>" / "deal:<id>".
+  const [ownerId, setOwnerId] = useState('');
   const [relatedKey, setRelatedKey] = useState('');
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(
     null,
   );
   const [locating, setLocating] = useState(false);
+
+  const needsPicker = !relatedType || !relatedId;
+
+  // Record picker sources — only fetched while the dialog is open.
+  const { data: leadPage } = useLeads({ page: 1 });
+  const { data: openDeals } = useQuery({
+    queryKey: ['deals', 'picker'],
+    queryFn: () =>
+      api<{ deals: WireDealLite[] }>('/api/deals').then((r) =>
+        r.deals.filter((d) => d.stage !== 'won' && d.stage !== 'lost'),
+      ),
+    enabled: open && needsPicker,
+  });
+
+  const canAssign = me ? hasCapability(me.role, 'assign_activities') : false;
+  const assignees = useMemo(
+    () => (users ?? []).filter((u) => u.active),
+    [users],
+  );
+
+  const pickerOptions = useMemo(() => {
+    if (!needsPicker) return [];
+    const leads =
+      leadPage?.leads
+        .filter((l) => l.status !== 'converted' && l.status !== 'disqualified')
+        .map((l) => ({
+          key: `lead:${l.id}`,
+          label: `Lead — ${l.name}${l.company ? ` (${l.company})` : ''}`,
+        })) ?? [];
+    const deals =
+      openDeals?.map((d) => ({ key: `deal:${d.id}`, label: `Deal — ${d.title}` })) ??
+      [];
+    return [...leads, ...deals];
+  }, [needsPicker, leadPage, openDeals]);
 
   function captureLocation() {
     if (!navigator.geolocation) {
@@ -83,38 +126,9 @@ export function ActivityDialog({
     );
   }
 
-  const needsPicker = !relatedType || !relatedId;
+  if (!me) return null;
 
-  const assignees = useMemo(
-    () => (currentUser ? assignableUsers(state.users, currentUser) : []),
-    [state.users, currentUser],
-  );
-
-  const pickerOptions = useMemo(() => {
-    if (!currentUser || !needsPicker) return [];
-    const visible = visibleUserIds(state.users, currentUser);
-    const leads = state.leads
-      .filter(
-        (l) =>
-          visible.has(l.ownerId) &&
-          l.status !== 'converted' &&
-          l.status !== 'disqualified',
-      )
-      .map((l) => ({
-        key: `lead:${l.id}`,
-        label: `Lead — ${l.name}${l.company ? ` (${l.company})` : ''}`,
-      }));
-    const deals = state.deals
-      .filter(
-        (d) =>
-          visible.has(d.ownerId) && d.stage !== 'won' && d.stage !== 'lost',
-      )
-      .map((d) => ({ key: `deal:${d.id}`, label: `Deal — ${d.title}` }));
-    return [...leads, ...deals];
-  }, [state.leads, state.deals, state.users, currentUser, needsPicker]);
-
-  if (!currentUser) return null;
-
+  const effectiveOwner = ownerId || me.id;
   const canSubmit =
     subject.trim().length > 0 && (!needsPicker || relatedKey !== '');
 
@@ -128,24 +142,37 @@ export function ActivityDialog({
       id = rest.join(':');
     }
     if (!type || !id) return;
-    addSalesActivity({
-      kind,
-      subject: subject.trim(),
-      notes: notes.trim(),
-      relatedType: type,
-      relatedId: id,
-      ownerId,
-      dueAt:
-        kind !== 'note' && dueAt ? new Date(dueAt).toISOString() : undefined,
-      location: coords ?? undefined,
-    });
-    setSubject('');
-    setDueAt('');
-    setNotes('');
-    setOwnerId(currentUser?.id ?? '');
-    setRelatedKey('');
-    setCoords(null);
-    setOpen(false);
+    createActivity.mutate(
+      {
+        kind,
+        subject: subject.trim(),
+        notes: notes.trim(),
+        relatedType: type,
+        relatedId: id,
+        ownerId: effectiveOwner,
+        dueAt:
+          kind !== 'note' && dueAt ? new Date(dueAt).toISOString() : undefined,
+        location: coords ?? undefined,
+      },
+      {
+        onSuccess: () => {
+          toast.success(
+            effectiveOwner !== me!.id
+              ? 'Assigned'
+              : kind === 'note'
+                ? 'Note added'
+                : 'Activity scheduled',
+          );
+          setSubject('');
+          setDueAt('');
+          setNotes('');
+          setOwnerId('');
+          setRelatedKey('');
+          setCoords(null);
+          setOpen(false);
+        },
+      },
+    );
   }
 
   return (
@@ -154,10 +181,12 @@ export function ActivityDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
-            {assignees.length > 1 ? 'Log or assign activity' : 'Log activity'}
+            {canAssign ? 'Log or assign activity' : 'Log activity'}
           </DialogTitle>
           <DialogDescription>
-            {relatedName ? `For ${relatedName}` : 'Pick a record and schedule work on it.'}
+            {relatedName
+              ? `For ${relatedName}`
+              : 'Pick a record and schedule work on it.'}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -211,11 +240,10 @@ export function ActivityDialog({
               </div>
             )}
           </div>
-          {/* Delegation: only offered when the actor manages other people. */}
-          {assignees.length > 1 && kind !== 'note' && (
+          {canAssign && assignees.length > 1 && kind !== 'note' && (
             <div className="space-y-1.5">
               <Label>Assign to</Label>
-              <Select value={ownerId} onValueChange={setOwnerId}>
+              <Select value={effectiveOwner} onValueChange={setOwnerId}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -223,7 +251,7 @@ export function ActivityDialog({
                   {assignees.map((u) => (
                     <SelectItem key={u.id} value={u.id}>
                       {u.name}
-                      {u.id === currentUser.id ? ' (me)' : ''}
+                      {u.id === me.id ? ' (me)' : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -250,7 +278,6 @@ export function ActivityDialog({
               onChange={(e) => setNotes(e.target.value)}
             />
           </div>
-          {/* Field check-in: proves the rep was on site */}
           <Button
             type="button"
             variant="outline"
@@ -268,10 +295,13 @@ export function ActivityDialog({
           </Button>
         </div>
         <DialogFooter>
-          <Button onClick={submit} disabled={!canSubmit}>
+          <Button
+            onClick={submit}
+            disabled={!canSubmit || createActivity.isPending}
+          >
             {kind === 'note'
               ? 'Add note'
-              : ownerId !== currentUser.id
+              : effectiveOwner !== me.id
                 ? 'Assign'
                 : 'Schedule'}
           </Button>

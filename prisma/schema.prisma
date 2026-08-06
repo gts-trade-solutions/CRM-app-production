@@ -131,6 +131,8 @@ model Lead {
   campaignId     String?
   campaign       Campaign?  @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   pendingSync    Boolean    @default(false)
+  /** Offline-capture dedupe: same key returns the existing lead. */
+  idempotencyKey String?    @unique
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 

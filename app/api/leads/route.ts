@@ -1,33 +1,50 @@
-// Exemplar resource endpoint — the pattern every entity follows in M2/M3:
-// session identity (requireUser), zod-validated input, server-side RBAC
-// scoping, paise→rupee conversion at the wire, pagination.
+// Leads collection — the reference resource endpoint pattern.
+// GET: RBAC-scoped, paginated, filterable (status / channel / q).
+// POST: creation with round-robin auto-assign ('__auto' picks the visible
+// rep with the fewest open leads), inline attachments, and idempotency-key
+// dedupe for offline capture.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { prisma, toPaise, toRupees } from '@/lib/server/db';
-import { requireUser } from '@/lib/server/auth';
-import { visibleUserIdsFor } from '@/lib/server/rbac';
+import { prisma, toPaise } from '@/lib/server/db';
+import {
+  actorContext,
+  forbidden,
+  pagination,
+  parseBody,
+  unauthenticated,
+} from '@/lib/server/api';
+import { serializeLead } from '@/lib/server/serialize';
+import { SOURCE_CONFIG, LeadSource } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
-const PAGE_SIZE = 25;
+const ONLINE_SOURCES = (Object.keys(SOURCE_CONFIG) as LeadSource[]).filter(
+  (s) => SOURCE_CONFIG[s].channel === 'online',
+);
+const OFFLINE_SOURCES = (Object.keys(SOURCE_CONFIG) as LeadSource[]).filter(
+  (s) => SOURCE_CONFIG[s].channel === 'offline',
+);
 
 export async function GET(req: NextRequest) {
-  const actor = await requireUser(req);
-  if (!actor) {
-    return NextResponse.json({ error: 'Unauthenticated' }, { status: 401 });
-  }
+  const ctx = await actorContext(req);
+  if (!ctx) return unauthenticated();
   const { searchParams } = new URL(req.url);
-  const page = Math.max(1, Number(searchParams.get('page')) || 1);
   const status = searchParams.get('status') ?? undefined;
+  const channel = searchParams.get('channel') ?? undefined;
   const q = searchParams.get('q')?.trim();
+  const { page, pageSize, skip, take } = pagination(req);
 
-  const visible = await visibleUserIdsFor(actor.id);
   const where = {
-    ownerId: { in: visible },
+    ownerId: { in: ctx.visible },
     ...(status
       ? { status: status as 'new' | 'contacted' | 'qualified' | 'converted' | 'disqualified' }
       : {}),
+    ...(channel === 'online'
+      ? { source: { in: ONLINE_SOURCES } }
+      : channel === 'offline'
+        ? { source: { in: OFFLINE_SOURCES } }
+        : {}),
     ...(q
       ? {
           OR: [
@@ -45,32 +62,46 @@ export async function GET(req: NextRequest) {
     prisma.lead.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * PAGE_SIZE,
-      take: PAGE_SIZE,
-      include: { owner: { select: { id: true, name: true } } },
+      skip,
+      take,
+      include: {
+        owner: { select: { id: true, name: true } },
+        _count: { select: { attachments: true } },
+      },
     }),
   ]);
 
+  // Engagement counts feed the lead score client-side.
+  const ids = rows.map((l) => l.id);
+  const activityCounts = ids.length
+    ? await prisma.salesActivity.groupBy({
+        by: ['relatedId'],
+        where: { relatedType: 'lead', relatedId: { in: ids } },
+        _count: { _all: true },
+      })
+    : [];
+  const countById = new Map(
+    activityCounts.map((c) => [c.relatedId, c._count._all]),
+  );
+
   return NextResponse.json({
     page,
-    pageSize: PAGE_SIZE,
+    pageSize,
     total,
     leads: rows.map((l) => ({
-      id: l.id,
-      name: l.name,
-      company: l.company,
-      phone: l.phone,
-      email: l.email,
-      source: l.source,
-      status: l.status,
-      owner: l.owner,
-      estimatedValue: toRupees(l.estimatedPaise),
-      campaignId: l.campaignId,
-      createdAt: l.createdAt.toISOString(),
-      updatedAt: l.updatedAt.toISOString(),
+      ...serializeLead(l),
+      activityCount: countById.get(l.id) ?? 0,
+      attachmentCount: l._count.attachments,
     })),
   });
 }
+
+const attachmentSchema = z.object({
+  name: z.string(),
+  size: z.number().int().min(0),
+  type: z.string(),
+  dataUrl: z.string().optional(),
+});
 
 const createLeadSchema = z.object({
   name: z.string().min(2),
@@ -88,36 +119,62 @@ const createLeadSchema = z.object({
     'event',
     'referral',
   ]),
+  /** A user id, or '__auto' for round-robin assignment. */
   ownerId: z.string().optional(),
   estimatedValue: z.number().min(0).default(0),
   notes: z.string().default(''),
   campaignId: z.string().optional(),
-  /** Offline-sync dedupe key (M4): same key → same lead, not a duplicate. */
-  idempotencyKey: z.string().optional(),
+  attachments: z.array(attachmentSchema).max(10).optional(),
+  /** Offline-capture dedupe key: replays return the existing lead. */
+  idempotencyKey: z.string().max(64).optional(),
+  /** True when the client queued this while offline (badge in UI). */
+  capturedOffline: z.boolean().optional(),
 });
 
 export async function POST(req: NextRequest) {
-  const actor = await requireUser(req);
-  if (!actor) {
-    return NextResponse.json({ error: 'Unauthenticated' }, { status: 401 });
-  }
-  const parsed = createLeadSchema.safeParse(await req.json());
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: 'Invalid input', issues: parsed.error.issues },
-      { status: 400 },
-    );
-  }
-  const input = parsed.data;
+  const ctx = await actorContext(req);
+  if (!ctx) return unauthenticated();
+  const body = await parseBody(req, createLeadSchema);
+  if (!body.ok) return body.res;
+  const input = body.data;
 
-  // Owner must be inside the actor's subtree.
-  const ownerId = input.ownerId ?? actor.id;
-  const visible = await visibleUserIdsFor(actor.id);
-  if (!visible.includes(ownerId)) {
-    return NextResponse.json(
-      { error: 'Owner is outside your scope' },
-      { status: 403 },
-    );
+  // Idempotent replay from the offline outbox.
+  if (input.idempotencyKey) {
+    const existing = await prisma.lead.findUnique({
+      where: { idempotencyKey: input.idempotencyKey },
+    });
+    if (existing) {
+      return NextResponse.json({ id: existing.id, deduped: true });
+    }
+  }
+
+  // Resolve owner: explicit (must be in scope) or fairest-rep auto-assign.
+  let ownerId = input.ownerId ?? ctx.actor.id;
+  if (input.ownerId === '__auto') {
+    const reps = await prisma.user.findMany({
+      where: { id: { in: ctx.visible }, role: 'sales_rep', active: true },
+      select: { id: true },
+    });
+    if (reps.length === 0) {
+      ownerId = ctx.actor.id;
+    } else {
+      const openCounts = await prisma.lead.groupBy({
+        by: ['ownerId'],
+        where: {
+          ownerId: { in: reps.map((r) => r.id) },
+          status: { in: ['new', 'contacted', 'qualified'] },
+        },
+        _count: { _all: true },
+      });
+      const countByOwner = new Map(
+        openCounts.map((c) => [c.ownerId, c._count._all]),
+      );
+      ownerId = reps
+        .map((r) => ({ id: r.id, open: countByOwner.get(r.id) ?? 0 }))
+        .sort((a, b) => a.open - b.open)[0].id;
+    }
+  } else if (!ctx.visible.includes(ownerId)) {
+    return forbidden('Owner is outside your scope');
   }
 
   const lead = await prisma.lead.create({
@@ -131,17 +188,39 @@ export async function POST(req: NextRequest) {
       estimatedPaise: toPaise(input.estimatedValue),
       notes: input.notes,
       campaignId: input.campaignId ?? null,
+      idempotencyKey: input.idempotencyKey ?? null,
+      pendingSync: false,
+      attachments: input.attachments?.length
+        ? {
+            create: input.attachments.map((a) => ({
+              name: a.name,
+              size: a.size,
+              mimeType: a.type,
+              dataUrl: a.dataUrl ?? null,
+              uploaderId: ctx.actor.id,
+            })),
+          }
+        : undefined,
     },
   });
 
+  if (ownerId !== ctx.actor.id) {
+    await prisma.notification.create({
+      data: {
+        userId: ownerId,
+        message: `New lead assigned to you: ${lead.name}${lead.company ? ` (${lead.company})` : ''}`,
+        href: `/leads/${lead.id}`,
+      },
+    });
+  }
   await prisma.auditEvent.create({
     data: {
       type: 'lead_created',
-      message: `New lead: ${lead.name}${lead.company ? ` (${lead.company})` : ''}`,
-      actorId: actor.id,
+      message: `New lead: ${lead.name}${lead.company ? ` (${lead.company})` : ''}${input.capturedOffline ? ' (offline capture)' : ''}`,
+      actorId: ctx.actor.id,
       entity: `lead:${lead.id}`,
     },
   });
 
-  return NextResponse.json({ id: lead.id }, { status: 201 });
+  return NextResponse.json({ id: lead.id, ownerId }, { status: 201 });
 }

@@ -1,7 +1,7 @@
 'use client';
 
-// Chronological activity list for a single lead/deal/contact, with a
-// complete/undo toggle on scheduled items.
+// Chronological activity list for a single lead/deal/contact — API-backed.
+// Complete/undo toggles persist to the database.
 
 import { format, isPast } from 'date-fns';
 import {
@@ -14,12 +14,8 @@ import {
   CheckSquare,
   Users,
 } from 'lucide-react';
-import { useStore } from '@/lib/store';
-import {
-  ACTIVITY_KIND_LABELS,
-  SalesActivity,
-  SalesActivityKind,
-} from '@/lib/types';
+import { useActivities, useToggleActivity } from '@/lib/api/hooks';
+import { ACTIVITY_KIND_LABELS, SalesActivityKind } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 
@@ -41,16 +37,24 @@ export function ActivityTimeline({
   relatedType: 'lead' | 'deal' | 'contact';
   relatedId: string;
 }) {
-  const { state, toggleActivityComplete } = useStore();
-  const userById = new Map(state.users.map((u) => [u.id, u]));
+  const { data, isLoading } = useActivities({ relatedType, relatedId });
+  const toggle = useToggleActivity();
 
-  const items = state.salesActivities
-    .filter((a) => a.relatedType === relatedType && a.relatedId === relatedId)
-    .sort(
-      (a, b) =>
-        new Date(b.dueAt ?? b.createdAt).getTime() -
-        new Date(a.dueAt ?? a.createdAt).getTime(),
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        {[0, 1].map((i) => (
+          <div key={i} className="h-16 animate-pulse rounded-lg bg-muted" />
+        ))}
+      </div>
     );
+  }
+
+  const items = [...(data ?? [])].sort(
+    (a, b) =>
+      new Date(b.dueAt ?? b.createdAt).getTime() -
+      new Date(a.dueAt ?? a.createdAt).getTime(),
+  );
 
   if (items.length === 0) {
     return (
@@ -62,16 +66,17 @@ export function ActivityTimeline({
 
   return (
     <ul className="space-y-3">
-      {items.map((a: SalesActivity) => {
+      {items.map((a) => {
         const Icon = KIND_ICONS[a.kind];
-        const overdue =
-          !a.completedAt && a.dueAt && isPast(new Date(a.dueAt));
+        const overdue = !a.completedAt && a.dueAt && isPast(new Date(a.dueAt));
         const schedulable = a.kind !== 'note';
         return (
           <li key={a.id} className="flex items-start gap-3 rounded-lg border p-3">
             {schedulable ? (
               <button
-                onClick={() => toggleActivityComplete(a.id)}
+                onClick={() =>
+                  toggle.mutate({ id: a.id, completed: !a.completedAt })
+                }
                 aria-label={a.completedAt ? 'Mark not done' : 'Mark done'}
                 className="mt-0.5 text-muted-foreground transition-colors hover:text-primary"
               >
@@ -118,10 +123,10 @@ export function ActivityTimeline({
                 </a>
               )}
               <p className="mt-1 text-xs text-muted-foreground">
-                {userById.get(a.ownerId)?.name ?? '—'}
-                {a.createdById &&
+                {a.owner?.name ?? '—'}
+                {a.createdBy &&
                   a.createdById !== a.ownerId &&
-                  ` · assigned by ${userById.get(a.createdById)?.name ?? '—'}`}
+                  ` · assigned by ${a.createdBy.name}`}
                 {a.dueAt &&
                   ` · due ${format(new Date(a.dueAt), 'd MMM, HH:mm')}`}
                 {a.completedAt &&

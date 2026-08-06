@@ -44,7 +44,46 @@ export async function GET(req: NextRequest) {
       createdBy: { select: { id: true, name: true } },
     },
   });
-  return NextResponse.json({ activities: rows.map(serializeActivity) });
+
+  // Resolve related-record display names in three batched queries.
+  const idsBy = (t: string) =>
+    rows.filter((r) => r.relatedType === t).map((r) => r.relatedId);
+  const [leads, deals, contacts] = await Promise.all([
+    prisma.lead.findMany({
+      where: { id: { in: idsBy('lead') } },
+      select: { id: true, name: true, company: true },
+    }),
+    prisma.deal.findMany({
+      where: { id: { in: idsBy('deal') } },
+      select: { id: true, title: true },
+    }),
+    prisma.contact.findMany({
+      where: { id: { in: idsBy('contact') } },
+      select: { id: true, name: true },
+    }),
+  ]);
+  const nameFor = (type: string, id: string): string => {
+    if (type === 'lead') {
+      const l = leads.find((x) => x.id === id);
+      return l ? `${l.name}${l.company ? ` (${l.company})` : ''}` : 'Lead';
+    }
+    if (type === 'deal') return deals.find((x) => x.id === id)?.title ?? 'Deal';
+    return contacts.find((x) => x.id === id)?.name ?? 'Contact';
+  };
+  const hrefFor = (type: string, id: string) =>
+    type === 'lead'
+      ? `/leads/${id}`
+      : type === 'deal'
+        ? `/pipeline/${id}`
+        : `/contacts/${id}`;
+
+  return NextResponse.json({
+    activities: rows.map((r) => ({
+      ...serializeActivity(r),
+      relatedName: nameFor(r.relatedType, r.relatedId),
+      relatedHref: hrefFor(r.relatedType, r.relatedId),
+    })),
+  });
 }
 
 const createSchema = z.object({

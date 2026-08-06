@@ -2,7 +2,15 @@
 // heuristics (no black box) — source quality + deal size + freshness +
 // engagement + qualification progress, clamped to 0–100.
 
-import { Lead, LeadSource } from './types';
+import { LeadSource, LeadStatus } from './types';
+
+/** The fields scoring actually reads — store Lead and API WireLead both fit. */
+export interface ScorableLead {
+  source: LeadSource;
+  status: LeadStatus;
+  estimatedValue: number;
+  updatedAt: string;
+}
 
 const SOURCE_POINTS: Record<LeadSource, number> = {
   referral: 25,
@@ -16,7 +24,7 @@ const SOURCE_POINTS: Record<LeadSource, number> = {
   social_media: 8,
 };
 
-export function leadScore(lead: Lead, activityCount: number): number {
+export function leadScore(lead: ScorableLead, activityCount: number): number {
   let score = SOURCE_POINTS[lead.source] ?? 10;
 
   // Deal size

@@ -1,15 +1,19 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+// Lead workspace — API-backed: detail, edit, qualification, attachments,
+// timeline, conversion. Server enforces scope; a 404 here means outside
+// your hierarchy or nonexistent.
+
+import { useState } from 'react';
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { format } from 'date-fns';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
   ArrowRightCircle,
   Building,
   CalendarPlus,
-  CloudOff,
   Mail,
   MessageCircle,
   Paperclip,
@@ -19,8 +23,14 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { useStore } from '@/lib/store';
-import { visibleUserIds } from '@/lib/rbac';
+import {
+  useActivities,
+  useConvertLead,
+  useLead,
+  useMe,
+  useUpdateLead,
+} from '@/lib/api/hooks';
+import { api } from '@/lib/api/client';
 import {
   LEAD_STATUS_CONFIG,
   LeadStatus,
@@ -62,16 +72,16 @@ import { Separator } from '@/components/ui/separator';
 
 export default function LeadDetailPage() {
   const params = useParams<{ id: string }>();
-  const router = useRouter();
-  const {
-    state,
-    currentUser,
-    setLeadStatus,
-    convertLead,
-    updateLead,
-    addLeadAttachments,
-    removeLeadAttachment,
-  } = useStore();
+  const qc = useQueryClient();
+  const { data: me } = useMe();
+  const { data: lead, isLoading, error } = useLead(params.id);
+  const { data: leadActivities } = useActivities({
+    relatedType: 'lead',
+    relatedId: params.id,
+  });
+  const updateLead = useUpdateLead(params.id);
+  const convert = useConvertLead();
+
   const [convertOpen, setConvertOpen] = useState(false);
   const [dealTitle, setDealTitle] = useState('');
   const [dealValue, setDealValue] = useState('');
@@ -85,19 +95,21 @@ export default function LeadDetailPage() {
     notes: '',
   });
 
-  const lead = state.leads.find((l) => l.id === params.id);
+  if (!me) return null;
 
-  const visible = useMemo(
-    () =>
-      currentUser
-        ? visibleUserIds(state.users, currentUser)
-        : new Set<string>(),
-    [state.users, currentUser],
-  );
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <div className="h-12 animate-pulse rounded-lg bg-muted" />
+        <div className="grid gap-4 lg:grid-cols-[1fr,1.6fr]">
+          <div className="h-64 animate-pulse rounded-lg bg-muted" />
+          <div className="h-64 animate-pulse rounded-lg bg-muted" />
+        </div>
+      </div>
+    );
+  }
 
-  if (!currentUser) return null;
-
-  if (!lead || !visible.has(lead.ownerId)) {
+  if (error || !lead) {
     return (
       <div className="py-16 text-center">
         <p className="text-muted-foreground">
@@ -112,17 +124,10 @@ export default function LeadDetailPage() {
 
   const source = SOURCE_CONFIG[lead.source];
   const status = LEAD_STATUS_CONFIG[lead.status];
-  const owner = state.users.find((u) => u.id === lead.ownerId);
-  const activityCount = state.salesActivities.filter(
-    (a) => a.relatedType === 'lead' && a.relatedId === lead.id,
-  ).length;
-  const score = leadScore(lead, activityCount);
-  const tier = scoreTier(score);
   const isOpen =
     lead.status !== 'converted' && lead.status !== 'disqualified';
-  const linkedDeal = state.deals.find(
-    (d) => state.contacts.find((c) => c.leadId === lead.id)?.id === d.contactId,
-  );
+  const score = leadScore(lead, leadActivities?.length ?? 0);
+  const tier = scoreTier(score);
 
   function openConvert() {
     if (!lead) return;
@@ -149,9 +154,29 @@ export default function LeadDetailPage() {
   }
 
   async function handleUpload(fileList: FileList | null) {
-    if (!lead || !currentUser || !fileList?.length) return;
-    const attachments = await filesToAttachments(fileList, currentUser.id);
-    addLeadAttachments(lead.id, attachments);
+    if (!lead || !fileList?.length) return;
+    const attachments = await filesToAttachments(fileList, me!.id);
+    await api(`/api/leads/${lead.id}/attachments`, {
+      method: 'POST',
+      json: {
+        attachments: attachments.map((a) => ({
+          name: a.name,
+          size: a.size,
+          type: a.type,
+          dataUrl: a.dataUrl,
+        })),
+      },
+    });
+    qc.invalidateQueries({ queryKey: ['lead', lead.id] });
+  }
+
+  async function removeAttachment(attachmentId: string) {
+    if (!lead) return;
+    await api(`/api/leads/${lead.id}/attachments`, {
+      method: 'DELETE',
+      json: { attachmentId },
+    });
+    qc.invalidateQueries({ queryKey: ['lead', lead.id] });
   }
 
   return (
@@ -185,19 +210,18 @@ export default function LeadDetailPage() {
                 {tier.label} · {score}
               </Badge>
             )}
-            {lead.pendingSync && (
-              <Badge variant="outline" className="gap-1 text-amber-600">
-                <CloudOff className="h-3 w-3" />
-                queued offline
-              </Badge>
-            )}
           </div>
           <p className="text-sm text-muted-foreground">
-            {lead.company || 'No company'} · owned by {owner?.name ?? '—'}
+            {lead.company || 'No company'} · owned by {lead.owner?.name ?? '—'}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="icon" onClick={openEdit} aria-label="Edit lead">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={openEdit}
+            aria-label="Edit lead"
+          >
             <Pencil />
           </Button>
           {lead.phone && (
@@ -328,7 +352,9 @@ export default function LeadDetailPage() {
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">Qualification</CardTitle>
-                <CardDescription>Move the lead along its lifecycle.</CardDescription>
+                <CardDescription>
+                  Move the lead along its lifecycle.
+                </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-wrap gap-2">
                 {(['contacted', 'qualified'] as LeadStatus[])
@@ -338,7 +364,8 @@ export default function LeadDetailPage() {
                       key={s}
                       variant="outline"
                       size="sm"
-                      onClick={() => setLeadStatus(lead.id, s)}
+                      disabled={updateLead.isPending}
+                      onClick={() => updateLead.mutate({ status: s })}
                     >
                       Mark {LEAD_STATUS_CONFIG[s].label.toLowerCase()}
                     </Button>
@@ -347,9 +374,8 @@ export default function LeadDetailPage() {
                   variant="outline"
                   size="sm"
                   className="text-destructive"
-                  onClick={() => {
-                    setLeadStatus(lead.id, 'disqualified');
-                  }}
+                  disabled={updateLead.isPending}
+                  onClick={() => updateLead.mutate({ status: 'disqualified' })}
                 >
                   Disqualify
                 </Button>
@@ -419,7 +445,7 @@ export default function LeadDetailPage() {
                       </div>
                       <button
                         aria-label={`Remove ${att.name}`}
-                        onClick={() => removeLeadAttachment(lead.id, att.id)}
+                        onClick={() => removeAttachment(att.id)}
                         className="text-muted-foreground hover:text-destructive"
                       >
                         <X className="h-4 w-4" />
@@ -431,16 +457,10 @@ export default function LeadDetailPage() {
             </CardContent>
           </Card>
 
-          {lead.status === 'converted' && linkedDeal && (
+          {lead.status === 'converted' && (
             <Card>
               <CardContent className="p-4 text-sm">
-                Converted — see deal{' '}
-                <Link
-                  href={`/pipeline/${linkedDeal.id}`}
-                  className="font-medium text-primary underline-offset-4 hover:underline"
-                >
-                  {linkedDeal.title}
-                </Link>
+                Converted — the contact and deal live in the pipeline.
               </CardContent>
             </Card>
           )}
@@ -531,18 +551,22 @@ export default function LeadDetailPage() {
           </div>
           <DialogFooter>
             <Button
-              disabled={!edit.name.trim() || !edit.phone.trim()}
-              onClick={() => {
-                updateLead(lead.id, {
-                  name: edit.name.trim(),
-                  company: edit.company.trim(),
-                  phone: edit.phone.trim(),
-                  email: edit.email.trim(),
-                  estimatedValue: Number(edit.estimatedValue) || 0,
-                  notes: edit.notes,
-                });
-                setEditOpen(false);
-              }}
+              disabled={
+                !edit.name.trim() || !edit.phone.trim() || updateLead.isPending
+              }
+              onClick={() =>
+                updateLead.mutate(
+                  {
+                    name: edit.name.trim(),
+                    company: edit.company.trim(),
+                    phone: edit.phone.trim(),
+                    email: edit.email.trim(),
+                    estimatedValue: Number(edit.estimatedValue) || 0,
+                    notes: edit.notes,
+                  },
+                  { onSuccess: () => setEditOpen(false) },
+                )
+              }
             >
               Save changes
             </Button>
@@ -550,13 +574,14 @@ export default function LeadDetailPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Convert */}
       <Dialog open={convertOpen} onOpenChange={setConvertOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Convert lead</DialogTitle>
             <DialogDescription>
-              Creates a contact and opens a Cold deal — you&apos;ll be taken
-              straight to it.
+              Creates a contact, links or creates the account, and opens a
+              Cold deal — atomically, on the server.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -581,16 +606,22 @@ export default function LeadDetailPage() {
           </div>
           <DialogFooter>
             <Button
-              disabled={!dealTitle.trim()}
-              onClick={() => {
-                const dealId = convertLead(
-                  lead.id,
-                  dealTitle,
-                  Number(dealValue) || 0,
-                );
-                setConvertOpen(false);
-                router.push(dealId ? `/pipeline/${dealId}` : '/pipeline');
-              }}
+              disabled={!dealTitle.trim() || convert.isPending}
+              onClick={() =>
+                convert.mutate(
+                  {
+                    leadId: lead.id,
+                    dealTitle,
+                    value: Number(dealValue) || 0,
+                  },
+                  {
+                    onSuccess: () => {
+                      setConvertOpen(false);
+                      qc.invalidateQueries({ queryKey: ['lead', lead.id] });
+                    },
+                  },
+                )
+              }
             >
               Convert
             </Button>

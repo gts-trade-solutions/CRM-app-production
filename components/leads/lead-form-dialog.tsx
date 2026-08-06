@@ -1,16 +1,21 @@
 'use client';
 
-// Lead capture dialog. Works both online and offline: when the device has
-// no connectivity the store queues the lead locally (pendingSync) and
-// flushes it automatically once the browser fires `online`.
+// Lead capture dialog — API-backed. Works offline: when the device has no
+// connectivity the lead goes to a durable local outbox and syncs (with an
+// idempotency key) the moment the browser is back online.
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { AlertTriangle, Paperclip, Shuffle, WifiOff, X } from 'lucide-react';
-import { AUTO_ASSIGN, useStore } from '@/lib/store';
-import { assignableUsers } from '@/lib/rbac';
+import { Paperclip, Shuffle, WifiOff, X } from 'lucide-react';
+import {
+  useApiCampaigns,
+  useApiUsers,
+  useCreateLead,
+  useMe,
+} from '@/lib/api/hooks';
+import { hasCapability } from '@/lib/policy';
 import { LeadSource, SOURCE_CONFIG } from '@/lib/types';
 import { filesToAttachments, formatBytes } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -34,6 +39,8 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 
+const AUTO_ASSIGN = '__auto';
+
 const leadSchema = z.object({
   name: z.string().min(2, 'Name is required'),
   company: z.string().default(''),
@@ -48,10 +55,14 @@ const leadSchema = z.object({
 type LeadFormValues = z.infer<typeof leadSchema>;
 
 export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
-  const { state, currentUser, online, addLead } = useStore();
+  const { data: me } = useMe();
+  const { data: users } = useApiUsers();
+  const { data: campaigns } = useApiCampaigns();
+  const createLead = useCreateLead();
   const [open, setOpen] = useState(false);
   const [campaignId, setCampaignId] = useState<string>('none');
   const [files, setFiles] = useState<File[]>([]);
+  const online = typeof navigator === 'undefined' ? true : navigator.onLine;
 
   const {
     register,
@@ -68,76 +79,56 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
       phone: '',
       email: '',
       source: '',
-      ownerId: currentUser?.id ?? '',
+      ownerId: '',
       estimatedValue: 0,
       notes: '',
     },
   });
 
-  const phoneValue = watch('phone');
-  const emailValue = watch('email');
+  if (!me) return null;
 
-  // Duplicate detection: same phone or email on an existing lead/contact.
-  const duplicate = useMemo(() => {
-    const phone = phoneValue?.replace(/\s/g, '');
-    const email = emailValue?.trim().toLowerCase();
-    if ((!phone || phone.length < 6) && !email) return null;
-    const userName = (id: string) =>
-      state.users.find((u) => u.id === id)?.name ?? 'someone';
-    for (const l of state.leads) {
-      if (
-        (phone && phone.length >= 6 && l.phone.replace(/\s/g, '') === phone) ||
-        (email && l.email.toLowerCase() === email)
-      ) {
-        return `Possible duplicate: lead “${l.name}” owned by ${userName(l.ownerId)}`;
-      }
-    }
-    for (const c of state.contacts) {
-      if (
-        (phone && phone.length >= 6 && c.phone.replace(/\s/g, '') === phone) ||
-        (email && c.email.toLowerCase() === email)
-      ) {
-        return `Possible duplicate: contact “${c.name}” owned by ${userName(c.ownerId)}`;
-      }
-    }
-    return null;
-  }, [phoneValue, emailValue, state.leads, state.contacts, state.users]);
-
-  if (!currentUser) return null;
-  const owners = assignableUsers(state.users, currentUser);
-  const canAutoAssign = owners.some(
-    (u) => u.role === 'sales_rep' && u.id !== currentUser.id,
+  const owners = (users ?? []).filter((u) => u.active);
+  const canAutoAssign =
+    hasCapability(me.role, 'reassign_records') &&
+    owners.some((u) => u.role === 'sales_rep' && u.id !== me.id);
+  const activeCampaigns = (campaigns ?? []).filter(
+    (c) => c.status === 'active',
   );
 
   async function onSubmit(values: LeadFormValues) {
     const attachments =
-      files.length > 0 && currentUser
-        ? await filesToAttachments(files, currentUser.id)
-        : undefined;
-    addLead({
-      name: values.name,
-      company: values.company,
-      phone: values.phone,
-      email: values.email,
-      source: values.source as LeadSource,
-      ownerId: values.ownerId,
-      estimatedValue: values.estimatedValue,
-      notes: values.notes,
-      campaignId: campaignId !== 'none' ? campaignId : undefined,
-      attachments,
-    });
-    reset();
-    setCampaignId('none');
-    setFiles([]);
-    setOpen(false);
+      files.length > 0 ? await filesToAttachments(files, me!.id) : undefined;
+    createLead.mutate(
+      {
+        name: values.name,
+        company: values.company,
+        phone: values.phone,
+        email: values.email,
+        source: values.source as LeadSource,
+        ownerId: values.ownerId,
+        estimatedValue: values.estimatedValue,
+        notes: values.notes,
+        campaignId: campaignId !== 'none' ? campaignId : undefined,
+        attachments: attachments?.map((a) => ({
+          name: a.name,
+          size: a.size,
+          type: a.type,
+          dataUrl: a.dataUrl,
+        })),
+      },
+      {
+        onSuccess: () => {
+          reset();
+          setCampaignId('none');
+          setFiles([]);
+          setOpen(false);
+        },
+      },
+    );
   }
 
-  const activeCampaigns = state.campaigns.filter(
-    (c) => c.status === 'active',
-  );
-
   const sourceValue = watch('source');
-  const ownerValue = watch('ownerId');
+  const ownerValue = watch('ownerId') || me.id;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -200,7 +191,9 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
               <Label>Source *</Label>
               <Select
                 value={sourceValue}
-                onValueChange={(v) => setValue('source', v, { shouldValidate: true })}
+                onValueChange={(v) =>
+                  setValue('source', v, { shouldValidate: true })
+                }
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select source" />
@@ -227,7 +220,9 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
               <Label>Owner *</Label>
               <Select
                 value={ownerValue}
-                onValueChange={(v) => setValue('ownerId', v, { shouldValidate: true })}
+                onValueChange={(v) =>
+                  setValue('ownerId', v, { shouldValidate: true })
+                }
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Assign to" />
@@ -237,7 +232,7 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
                     <SelectItem value={AUTO_ASSIGN}>
                       <span className="flex items-center gap-1.5">
                         <Shuffle className="h-3.5 w-3.5" />
-                        Auto-assign (round-robin)
+                        Auto-assign (fewest open leads)
                       </span>
                     </SelectItem>
                   )}
@@ -270,13 +265,6 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
             </div>
           )}
 
-          {duplicate && (
-            <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-2.5 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              {duplicate}
-            </div>
-          )}
-
           <div className="space-y-1.5">
             <Label htmlFor="lead-value">Estimated value (₹)</Label>
             <Input
@@ -292,7 +280,6 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
             <Textarea id="lead-notes" rows={2} {...register('notes')} />
           </div>
 
-          {/* Field capture: enquiry forms, visiting cards, site photos */}
           <div className="space-y-1.5">
             <Label htmlFor="lead-files">
               Attachments (enquiry form, visiting card, photos)
@@ -338,7 +325,11 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
           </div>
 
           <DialogFooter>
-            <Button type="submit" className="w-full sm:w-auto">
+            <Button
+              type="submit"
+              className="w-full sm:w-auto"
+              disabled={createLead.isPending}
+            >
               {online ? 'Create lead' : 'Queue lead (offline)'}
             </Button>
           </DialogFooter>

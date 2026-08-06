@@ -7,7 +7,7 @@
 
 import { useState } from 'react';
 import { FileUp, Upload } from 'lucide-react';
-import { useStore } from '@/lib/store';
+import { useImportLeads } from '@/lib/api/hooks';
 import { LeadSource, SOURCE_CONFIG } from '@/lib/types';
 import { parseCsv } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -52,7 +52,7 @@ function matchSource(raw: string): LeadSource {
 }
 
 export function ImportLeadsDialog({ trigger }: { trigger: React.ReactNode }) {
-  const { importLeads } = useStore();
+  const importLeads = useImportLeads();
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<ParsedRow[]>([]);
   const [fileName, setFileName] = useState('');
@@ -116,9 +116,12 @@ export function ImportLeadsDialog({ trigger }: { trigger: React.ReactNode }) {
   }
 
   function runImport() {
-    const res = importLeads(rows);
-    setResult(res);
-    setRows([]);
+    importLeads.mutate(rows, {
+      onSuccess: (res) => {
+        setResult(res);
+        setRows([]);
+      },
+    });
   }
 
   function reset() {
@@ -211,9 +214,14 @@ export function ImportLeadsDialog({ trigger }: { trigger: React.ReactNode }) {
             )}
 
             <DialogFooter>
-              <Button onClick={runImport} disabled={rows.length === 0}>
+              <Button
+                onClick={runImport}
+                disabled={rows.length === 0 || importLeads.isPending}
+              >
                 <Upload />
-                Import {rows.length > 0 ? `${rows.length} leads` : ''}
+                {importLeads.isPending
+                  ? 'Importing…'
+                  : `Import ${rows.length > 0 ? `${rows.length} leads` : ''}`}
               </Button>
             </DialogFooter>
           </>
