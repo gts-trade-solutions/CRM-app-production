@@ -1,0 +1,332 @@
+// Production schema — the server-side twin of lib/types.ts.
+// Conventions:
+//  - Money is stored in PAISE as BigInt (never floats); the service layer
+//    converts to whole rupees for the wire.
+//  - cuid() ids; seed data keeps the legacy short ids (u1, l1, …).
+//  - Indexes cover every scoped list query (ownerId, stage, status, dates).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  regional_manager
+  team_lead
+  sales_rep
+}
+
+enum LeadSource {
+  website
+  social_media
+  email_campaign
+  marketplace
+  walk_in
+  phone
+  field_visit
+  event
+  referral
+}
+
+enum LeadStatus {
+  new
+  contacted
+  qualified
+  converted
+  disqualified
+}
+
+enum DealStage {
+  qualification
+  proposal
+  negotiation
+  won
+  lost
+}
+
+enum ActivityKind {
+  call
+  meeting
+  task
+  email
+  note
+}
+
+enum QuoteStatus {
+  draft
+  sent
+  accepted
+}
+
+enum CampaignStatus {
+  active
+  completed
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String? // set when the invite is accepted (M3)
+  role         Role
+  managerId    String?
+  manager      User?    @relation("Hierarchy", fields: [managerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reports      User[]   @relation("Hierarchy")
+  region       String
+  title        String
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  leads           Lead[]
+  contacts        Contact[]
+  accounts        Account[]
+  deals           Deal[]
+  salesActivities SalesActivity[] @relation("ActivityOwner")
+  createdActivities SalesActivity[] @relation("ActivityCreator")
+  notifications   Notification[]
+  quotes          Quote[]
+  target          Target?
+  auditEvents     AuditEvent[]
+
+  @@index([managerId])
+}
+
+model Target {
+  userId       String @id
+  user         User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  monthlyPaise BigInt
+}
+
+model Campaign {
+  id        String         @id @default(cuid())
+  name      String
+  // 'online' | 'offline' — kept as string to match SOURCE_CONFIG channels
+  channel   String
+  budgetPaise BigInt
+  spendPaise  BigInt?
+  status    CampaignStatus @default(active)
+  startDate DateTime
+  createdAt DateTime       @default(now())
+  leads     Lead[]
+}
+
+model Lead {
+  id             String     @id @default(cuid())
+  name           String
+  company        String     @default("")
+  phone          String
+  email          String     @default("")
+  source         LeadSource
+  status         LeadStatus @default(new)
+  ownerId        String
+  owner          User       @relation(fields: [ownerId], references: [id])
+  estimatedPaise BigInt     @default(0)
+  // TEXT columns can't carry defaults in MySQL — services always supply ''.
+  notes          String     @db.Text
+  campaignId     String?
+  campaign       Campaign?  @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  pendingSync    Boolean    @default(false)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  attachments LeadAttachment[]
+  contact     Contact?
+
+  @@index([ownerId, status])
+  @@index([campaignId])
+  @@index([createdAt])
+  @@index([phone])
+  @@index([email])
+}
+
+model LeadAttachment {
+  id         String   @id @default(cuid())
+  leadId     String
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  name       String
+  size       Int
+  mimeType   String
+  // Interim inline preview; replaced by an S3 object key in M4.
+  dataUrl    String?  @db.LongText
+  s3Key      String?
+  uploaderId String
+  uploadedAt DateTime @default(now())
+
+  @@index([leadId])
+}
+
+model Account {
+  id        String    @id @default(cuid())
+  name      String
+  industry  String    @default("")
+  city      String    @default("")
+  website   String    @default("")
+  ownerId   String
+  owner     User      @relation(fields: [ownerId], references: [id])
+  archived  Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  contacts  Contact[]
+
+  @@index([ownerId])
+  @@index([name])
+}
+
+model Contact {
+  id        String   @id @default(cuid())
+  name      String
+  company   String   @default("")
+  title     String   @default("")
+  phone     String
+  email     String   @default("")
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id])
+  leadId    String?  @unique
+  lead      Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  accountId String?
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  archived  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  deals     Deal[]
+
+  @@index([ownerId])
+  @@index([accountId])
+  @@index([phone])
+  @@index([email])
+}
+
+model Product {
+  id        String   @id @default(cuid())
+  name      String
+  sku       String   @default("")
+  category  String   @default("")
+  pricePaise BigInt
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  lineItems DealLineItem[]
+}
+
+model Deal {
+  id            String    @id @default(cuid())
+  title         String
+  contactId     String
+  contact       Contact   @relation(fields: [contactId], references: [id])
+  ownerId       String
+  owner         User      @relation(fields: [ownerId], references: [id])
+  stage         DealStage @default(qualification)
+  valuePaise    BigInt    @default(0)
+  expectedClose DateTime
+  closedAt      DateTime?
+  lostReason    String?
+  archived      Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  // Outcome-logging columns (AI groundwork — populated from day one)
+  scoreAtConversion Int?
+
+  lineItems DealLineItem[]
+  quotes    Quote[]
+
+  @@index([ownerId, stage])
+  @@index([contactId])
+  @@index([closedAt])
+  @@index([createdAt])
+}
+
+model DealLineItem {
+  id         String  @id @default(cuid())
+  dealId     String
+  deal       Deal    @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product @relation(fields: [productId], references: [id])
+  qty        Int
+  // Price snapshot at the time the line was added.
+  pricePaise BigInt
+
+  @@unique([dealId, productId])
+}
+
+model Quote {
+  id            String      @id @default(cuid())
+  dealId        String
+  deal          Deal        @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  number        String      @unique
+  subtotalPaise BigInt
+  gstPaise      BigInt
+  totalPaise    BigInt
+  status        QuoteStatus @default(draft)
+  createdById   String
+  createdBy     User        @relation(fields: [createdById], references: [id])
+  createdAt     DateTime    @default(now())
+
+  @@index([dealId])
+}
+
+model SalesActivity {
+  id          String       @id @default(cuid())
+  kind        ActivityKind
+  subject     String
+  notes       String       @db.Text
+  relatedType String // 'lead' | 'deal' | 'contact'
+  relatedId   String
+  ownerId     String
+  owner       User         @relation("ActivityOwner", fields: [ownerId], references: [id])
+  createdById String?
+  createdBy   User?        @relation("ActivityCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  dueAt       DateTime?
+  completedAt DateTime?
+  lat         Float?
+  lng         Float?
+  createdAt   DateTime     @default(now())
+
+  @@index([ownerId, dueAt])
+  @@index([relatedType, relatedId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message   String
+  href      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read])
+}
+
+// Server-authored audit trail — replaces the client-written feed.
+model AuditEvent {
+  id        String   @id @default(cuid())
+  type      String
+  message   String
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  entity    String? // e.g. 'lead:l1'
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([actorId])
+}
+
+// Singleton (id = 1): organisation identity for quotations.
+model OrgSettings {
+  id                Int    @id @default(1)
+  companyName       String
+  addressLine       String
+  gstin             String
+  quoteValidityDays Int    @default(15)
+  gstRateBps        Int    @default(1800) // basis points: 1800 = 18%
+  quoteTermsJson    String @db.Text // JSON array of strings
+  quoteCounter      Int    @default(1)
+}
+
+model StageSetting {
+  stage  DealStage @id
+  label  String
+  // Forecast probability in basis points (7500 = 75%).
+  weightBps Int
+}
