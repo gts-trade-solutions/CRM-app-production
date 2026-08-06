@@ -1,0 +1,17 @@
+{
+  "name": "SalesForce CRM",
+  "short_name": "SalesForce",
+  "description": "Field-first CRM for Indian sales teams — leads to secured orders.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2a78d6",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

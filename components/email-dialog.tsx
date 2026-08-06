@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { Send } from 'lucide-react';
 import { toast } from 'sonner';
 import { useCreateActivity } from '@/lib/api/hooks';
+import { VoiceInput } from '@/components/voice-input';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -84,7 +85,14 @@ export function EmailDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="em-body">Message</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="em-body">Message</Label>
+              <VoiceInput
+                onText={(text) =>
+                  setBody((prev) => (prev ? `${prev} ${text}` : text))
+                }
+              />
+            </div>
             <Textarea
               id="em-body"
               rows={5}

@@ -3,11 +3,13 @@
 // In-app notifications — API-backed, polled every 30s, marked read on
 // close, deep-linking to their records.
 
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatDistanceToNow } from 'date-fns';
 import { Bell } from 'lucide-react';
 import {
   useMarkNotificationsRead,
+  useNotificationStream,
   useNotifications,
 } from '@/lib/api/crm-hooks';
 import { cn } from '@/lib/utils';
@@ -23,7 +25,11 @@ import {
 export function NotificationsMenu() {
   const { data } = useNotifications();
   const markRead = useMarkNotificationsRead();
+  const subscribe = useNotificationStream();
   const router = useRouter();
+
+  // Live updates via SSE; falls back to the query's slow poll.
+  useEffect(() => subscribe(), [subscribe]);
 
   const unread = data?.unread ?? 0;
   const items = data?.notifications ?? [];

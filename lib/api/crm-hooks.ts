@@ -3,6 +3,7 @@
 // React Query hooks for contacts, accounts, deals, quotes, settings,
 // notifications, products and global search.
 
+import { useCallback } from 'react';
 import {
   useMutation,
   useQuery,
@@ -387,8 +388,34 @@ export function useNotifications() {
       api<{ unread: number; notifications: WireNotification[] }>(
         '/api/notifications',
       ),
-    refetchInterval: 30_000,
+    // Slow poll — the SSE stream below is the primary trigger.
+    refetchInterval: 60_000,
   });
+}
+
+/**
+ * Subscribes to the SSE unread stream; when the count changes, the
+ * notifications query is invalidated so the bell re-fetches. Returns a
+ * stable subscribe function for use in a useEffect.
+ */
+export function useNotificationStream() {
+  const qc = useQueryClient();
+  return useCallback(() => {
+    const source = new EventSource('/api/notifications/stream');
+    let lastUnread = -1;
+    source.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as { unread: number };
+        if (data.unread !== lastUnread) {
+          lastUnread = data.unread;
+          qc.invalidateQueries({ queryKey: ['notifications'] });
+        }
+      } catch {
+        // malformed frame — ignore
+      }
+    };
+    return () => source.close();
+  }, [qc]);
 }
 
 export function useMarkNotificationsRead() {
@@ -603,6 +630,47 @@ export function useUpdateCampaign() {
     onSuccess: () => {
       toast.success('Campaign updated');
       qc.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+/* ----------------------------------------------------------- data quality */
+
+export interface DupeRecord {
+  kind: 'lead' | 'contact';
+  id: string;
+  name: string;
+  company: string;
+  phone: string;
+  email: string;
+  ownerName: string;
+  status?: string;
+}
+
+export function useDupes() {
+  return useQuery({
+    queryKey: ['dupes'],
+    queryFn: () =>
+      api<{ groups: { key: string; records: DupeRecord[] }[] }>(
+        '/api/dupes',
+      ).then((r) => r.groups),
+  });
+}
+
+export function useMergeDupes() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      kind: 'lead' | 'contact';
+      survivorId: string;
+      duplicateId: string;
+    }) => api('/api/dupes', { method: 'POST', json: input }),
+    onSuccess: () => {
+      toast.success('Records merged');
+      qc.invalidateQueries({ queryKey: ['dupes'] });
+      qc.invalidateQueries({ queryKey: ['leads'] });
+      qc.invalidateQueries({ queryKey: ['contacts'] });
     },
     onError: (e: Error) => toast.error(e.message),
   });

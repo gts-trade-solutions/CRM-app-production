@@ -17,6 +17,7 @@ import { api } from '@/lib/api/client';
 import { useQuery } from '@tanstack/react-query';
 import { hasCapability } from '@/lib/policy';
 import { ACTIVITY_KIND_LABELS, SalesActivityKind } from '@/lib/types';
+import { VoiceInput } from '@/components/voice-input';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -270,7 +271,14 @@ export function ActivityDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="act-notes">Notes</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="act-notes">Notes</Label>
+              <VoiceInput
+                onText={(text) =>
+                  setNotes((prev) => (prev ? `${prev} ${text}` : text))
+                }
+              />
+            </div>
             <Textarea
               id="act-notes"
               rows={3}

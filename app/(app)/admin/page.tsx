@@ -7,8 +7,11 @@
 import { useMemo, useState } from 'react';
 import { Pencil, Plus, UserX } from 'lucide-react';
 import {
+  DupeRecord,
   TeamMember,
   useDeactivateMember,
+  useDupes,
+  useMergeDupes,
   useProducts,
   useSetTarget,
   useSettings,
@@ -90,6 +93,7 @@ function AdminContent() {
           <TabsTrigger value="products">Products</TabsTrigger>
           <TabsTrigger value="org">Organisation</TabsTrigger>
           <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
+          <TabsTrigger value="quality">Data quality</TabsTrigger>
         </TabsList>
         <TabsContent value="users">
           <UsersTab />
@@ -106,8 +110,123 @@ function AdminContent() {
         <TabsContent value="pipeline">
           <PipelineTab />
         </TabsContent>
+        <TabsContent value="quality">
+          <DataQualityTab />
+        </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------ Data quality */
+
+function DataQualityTab() {
+  const { data: groups, isLoading } = useDupes();
+  const merge = useMergeDupes();
+
+  function mergeable(records: DupeRecord[]) {
+    // Same-kind pairs only in v1; converted leads are protected.
+    const leads = records.filter(
+      (r) => r.kind === 'lead' && r.status !== 'converted',
+    );
+    const contacts = records.filter((r) => r.kind === 'contact');
+    if (leads.length >= 2) return { kind: 'lead' as const, records: leads };
+    if (contacts.length >= 2)
+      return { kind: 'contact' as const, records: contacts };
+    return null;
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardDescription>
+          Records sharing a phone number or email. Merging keeps the
+          survivor, re-points activities/attachments/deals, backfills empty
+          fields, and deletes the duplicate — audit-logged.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {isLoading ? (
+          <div className="h-24 animate-pulse rounded-lg bg-muted" />
+        ) : (groups ?? []).length === 0 ? (
+          <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+            No duplicates detected — the data is clean.
+          </p>
+        ) : (
+          (groups ?? []).map((group) => {
+            const m = mergeable(group.records);
+            return (
+              <div key={group.key} className="rounded-lg border p-3">
+                <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Shared {group.key.startsWith('p:') ? 'phone' : 'email'}:{' '}
+                  {group.key.slice(2)}
+                </p>
+                <div className="space-y-1.5">
+                  {group.records.map((r) => (
+                    <div
+                      key={`${r.kind}-${r.id}`}
+                      className="flex flex-wrap items-center gap-2 text-sm"
+                    >
+                      <Badge variant="secondary" className="text-[10px]">
+                        {r.kind}
+                      </Badge>
+                      <span className="font-medium">{r.name}</span>
+                      <span className="text-muted-foreground">
+                        {[r.company, r.ownerName, r.status]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {m ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+                    <span className="text-muted-foreground">
+                      Keep “{m.records[0].name}”, merge in “{m.records[1].name}
+                      ”:
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={merge.isPending}
+                      onClick={() =>
+                        merge.mutate({
+                          kind: m.kind,
+                          survivorId: m.records[0].id,
+                          duplicateId: m.records[1].id,
+                        })
+                      }
+                    >
+                      Merge
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={merge.isPending}
+                      onClick={() =>
+                        merge.mutate({
+                          kind: m.kind,
+                          survivorId: m.records[1].id,
+                          duplicateId: m.records[0].id,
+                        })
+                      }
+                    >
+                      Keep the other instead
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    Cross-type or converted-lead pair — resolve manually (a
+                    converted lead and its contact sharing details is
+                    expected).
+                  </p>
+                )}
+              </div>
+            );
+          })
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

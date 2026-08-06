@@ -1,14 +1,21 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import { Providers } from '@/components/providers';
+import { PwaRegister } from '@/components/pwa-register';
 
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'SalesForce MVP',
+  title: 'SalesForce CRM',
   description:
-    'Sales workforce CRM MVP — leads, pipeline, and hierarchy-based access.',
+    'Field-first CRM for Indian sales teams — leads to secured orders.',
+  manifest: '/manifest.webmanifest',
+  icons: { icon: '/icon.svg' },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#2a78d6',
 };
 
 export default function RootLayout({
@@ -20,6 +27,7 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
         <Providers>{children}</Providers>
+        <PwaRegister />
       </body>
     </html>
   );
