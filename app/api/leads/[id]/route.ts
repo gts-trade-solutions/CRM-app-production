@@ -8,6 +8,7 @@ import {
   unauthenticated,
 } from '@/lib/server/api';
 import { serializeLead } from '@/lib/server/serialize';
+import { attachmentUrl } from '@/lib/server/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,18 +27,23 @@ export async function GET(
     },
   });
   if (!lead) return notFound();
+  const attachments = await Promise.all(
+    lead.attachments.map(async (a) => ({
+      id: a.id,
+      name: a.name,
+      size: a.size,
+      type: a.mimeType,
+      dataUrl: a.dataUrl,
+      // Presigned S3 URL when stored remotely; inline preview otherwise.
+      url: a.s3Key ? await attachmentUrl(a.s3Key) : a.dataUrl,
+      uploadedAt: a.uploadedAt.toISOString(),
+    })),
+  );
   return NextResponse.json({
     lead: {
       ...serializeLead(lead),
       contactId: lead.contact?.id ?? null,
-      attachments: lead.attachments.map((a) => ({
-        id: a.id,
-        name: a.name,
-        size: a.size,
-        type: a.mimeType,
-        dataUrl: a.dataUrl,
-        uploadedAt: a.uploadedAt.toISOString(),
-      })),
+      attachments,
     },
   });
 }

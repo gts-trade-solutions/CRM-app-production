@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/server/db';
+import { deleteAttachment, storeAttachment } from '@/lib/server/storage';
 import {
   actorContext,
   notFound,
@@ -38,16 +39,20 @@ export async function POST(
   const body = await parseBody(req, schema);
   if (!body.ok) return body.res;
 
-  await prisma.leadAttachment.createMany({
-    data: body.data.attachments.map((a) => ({
-      leadId: lead.id,
-      name: a.name,
-      size: a.size,
-      mimeType: a.type,
-      dataUrl: a.dataUrl ?? null,
-      uploaderId: ctx.actor.id,
-    })),
-  });
+  for (const a of body.data.attachments) {
+    const stored = await storeAttachment(a);
+    await prisma.leadAttachment.create({
+      data: {
+        leadId: lead.id,
+        name: a.name,
+        size: a.size,
+        mimeType: a.type,
+        dataUrl: stored.dataUrl,
+        s3Key: stored.s3Key,
+        uploaderId: ctx.actor.id,
+      },
+    });
+  }
   return NextResponse.json({ ok: true }, { status: 201 });
 }
 
@@ -65,6 +70,16 @@ export async function DELETE(
   if (!lead) return notFound();
   const body = await parseBody(req, deleteSchema);
   if (!body.ok) return body.res;
+  const attachment = await prisma.leadAttachment.findFirst({
+    where: { id: body.data.attachmentId, leadId: lead.id },
+  });
+  if (attachment?.s3Key) {
+    try {
+      await deleteAttachment(attachment.s3Key);
+    } catch {
+      // best-effort — the DB row is the source of truth
+    }
+  }
   await prisma.leadAttachment.deleteMany({
     where: { id: body.data.attachmentId, leadId: lead.id },
   });

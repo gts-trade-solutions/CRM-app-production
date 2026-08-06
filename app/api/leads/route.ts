@@ -15,6 +15,7 @@ import {
   unauthenticated,
 } from '@/lib/server/api';
 import { serializeLead } from '@/lib/server/serialize';
+import { storeAttachment } from '@/lib/server/storage';
 import { SOURCE_CONFIG, LeadSource } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -179,6 +180,18 @@ export async function POST(req: NextRequest) {
     return forbidden('Owner is outside your scope');
   }
 
+  const storedAttachments = input.attachments?.length
+    ? await Promise.all(
+        input.attachments.map(async (a) => ({
+          name: a.name,
+          size: a.size,
+          mimeType: a.type,
+          ...(await storeAttachment(a)),
+          uploaderId: ctx.actor.id,
+        })),
+      )
+    : [];
+
   const lead = await prisma.lead.create({
     data: {
       name: input.name,
@@ -193,16 +206,8 @@ export async function POST(req: NextRequest) {
       idempotencyKey: input.idempotencyKey ?? null,
       consentAt: input.consent ? new Date() : null,
       pendingSync: false,
-      attachments: input.attachments?.length
-        ? {
-            create: input.attachments.map((a) => ({
-              name: a.name,
-              size: a.size,
-              mimeType: a.type,
-              dataUrl: a.dataUrl ?? null,
-              uploaderId: ctx.actor.id,
-            })),
-          }
+      attachments: storedAttachments.length
+        ? { create: storedAttachments }
         : undefined,
     },
   });

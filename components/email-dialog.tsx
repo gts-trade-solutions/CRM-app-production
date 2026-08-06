@@ -1,12 +1,13 @@
 'use client';
 
-// Demo email composer — API-backed: "sends" and logs a completed email
-// activity on the record's timeline. Real provider send lands in M4 (SES).
+// Email composer: sends via SES when the server has it configured (the
+// response says which happened) and always logs to the timeline.
 
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Send } from 'lucide-react';
 import { toast } from 'sonner';
-import { useCreateActivity } from '@/lib/api/hooks';
+import { api } from '@/lib/api/client';
 import { VoiceInput } from '@/components/voice-input';
 import { Button } from '@/components/ui/button';
 import {
@@ -33,31 +34,40 @@ export function EmailDialog({
   to: string;
   trigger: React.ReactNode;
 }) {
-  const createActivity = useCreateActivity();
+  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
+  const [sending, setSending] = useState(false);
 
-  function send() {
+  async function send() {
     if (!subject.trim()) return;
-    createActivity.mutate(
-      {
-        kind: 'email',
-        subject: `Email: ${subject.trim()}`,
-        notes: `To ${to}${body.trim() ? ` — ${body.trim()}` : ''}`,
-        relatedType,
-        relatedId,
-        completedAt: new Date().toISOString(),
-      },
-      {
-        onSuccess: () => {
-          toast.success('Email logged to the timeline');
-          setSubject('');
-          setBody('');
-          setOpen(false);
+    setSending(true);
+    try {
+      const result = await api<{ sent: boolean }>('/api/email', {
+        method: 'POST',
+        json: {
+          to,
+          subject: subject.trim(),
+          body: body.trim(),
+          relatedType,
+          relatedId,
         },
-      },
-    );
+      });
+      toast.success(
+        result.sent
+          ? `Email sent to ${to}`
+          : 'Email logged (sending service not configured)',
+      );
+      qc.invalidateQueries({ queryKey: ['activities'] });
+      setSubject('');
+      setBody('');
+      setOpen(false);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSending(false);
+    }
   }
 
   return (
@@ -67,8 +77,8 @@ export function EmailDialog({
         <DialogHeader>
           <DialogTitle>Send email</DialogTitle>
           <DialogDescription>
-            Logged to the record&apos;s timeline. (Demo — no real email is
-            sent.)
+            Sent from the organisation address and logged to the
+            record&apos;s timeline.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -102,12 +112,9 @@ export function EmailDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button
-            onClick={send}
-            disabled={!subject.trim() || createActivity.isPending}
-          >
+          <Button onClick={send} disabled={!subject.trim() || sending}>
             <Send />
-            Send & log
+            {sending ? 'Sending…' : 'Send & log'}
           </Button>
         </DialogFooter>
       </DialogContent>

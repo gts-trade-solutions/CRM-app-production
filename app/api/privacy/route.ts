@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma, toRupees } from '@/lib/server/db';
+import { deleteAttachment } from '@/lib/server/storage';
 import { hasCapability } from '@/lib/policy';
 import {
   actorContext,
@@ -131,6 +132,18 @@ export async function POST(req: NextRequest) {
   if (type === 'lead') {
     const lead = await prisma.lead.findUnique({ where: { id } });
     if (!lead) return notFound();
+    // Best-effort S3 cleanup before the DB rows go.
+    const attachments = await prisma.leadAttachment.findMany({
+      where: { leadId: id, s3Key: { not: null } },
+      select: { s3Key: true },
+    });
+    for (const a of attachments) {
+      try {
+        if (a.s3Key) await deleteAttachment(a.s3Key);
+      } catch {
+        // object may already be gone
+      }
+    }
     await prisma.$transaction([
       prisma.leadAttachment.deleteMany({ where: { leadId: id } }),
       prisma.salesActivity.updateMany({

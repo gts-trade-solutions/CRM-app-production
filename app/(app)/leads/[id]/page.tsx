@@ -424,10 +424,10 @@ export default function LeadDetailPage() {
                       key={att.id}
                       className="flex items-center gap-3 rounded-lg border p-2.5"
                     >
-                      {att.dataUrl ? (
+                      {att.url && att.type.startsWith('image/') ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={att.dataUrl}
+                          src={att.url}
                           alt={att.name}
                           className="h-10 w-10 rounded-md border object-cover"
                         />
@@ -437,9 +437,20 @@ export default function LeadDetailPage() {
                         </div>
                       )}
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">
-                          {att.name}
-                        </p>
+                        {att.url ? (
+                          <a
+                            href={att.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block truncate text-sm font-medium underline-offset-4 hover:text-primary hover:underline"
+                          >
+                            {att.name}
+                          </a>
+                        ) : (
+                          <p className="truncate text-sm font-medium">
+                            {att.name}
+                          </p>
+                        )}
                         <p className="text-xs text-muted-foreground">
                           {formatBytes(att.size)} ·{' '}
                           {format(new Date(att.uploadedAt), 'd MMM yyyy')}

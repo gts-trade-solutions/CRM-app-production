@@ -58,6 +58,8 @@ export interface WireLead {
     size: number;
     type: string;
     dataUrl: string | null;
+    /** Presigned S3 URL (or inline data-URL fallback) for preview/download. */
+    url: string | null;
     uploadedAt: string;
   }>;
 }

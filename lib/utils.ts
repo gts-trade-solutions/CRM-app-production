@@ -84,9 +84,10 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
- * Turn picked files into attachment records. Small images get an inline
- * data-URL preview; everything else keeps metadata only (the demo store is
- * localStorage-backed, so large payloads must not be persisted).
+ * Turn picked files into attachment payloads. Files up to the cap carry
+ * their bytes as a data-URL — the server uploads them to S3 (or stores
+ * small images inline when S3 isn't configured). Larger files keep
+ * metadata only.
  */
 export async function filesToAttachments(
   files: FileList | File[],
@@ -102,12 +103,12 @@ export async function filesToAttachments(
     uploaderId: string;
   }>
 > {
-  const MAX_PREVIEW_BYTES = 400_000;
+  const MAX_UPLOAD_BYTES = 8_000_000; // published limit: 8MB per file
   const list = Array.from(files);
   return Promise.all(
     list.map(async (file) => {
       let dataUrl: string | undefined;
-      if (file.type.startsWith('image/') && file.size <= MAX_PREVIEW_BYTES) {
+      if (file.size <= MAX_UPLOAD_BYTES) {
         dataUrl = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(String(reader.result));
