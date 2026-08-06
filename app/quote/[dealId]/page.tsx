@@ -51,8 +51,11 @@ export default function QuotePage() {
   const quote = quotes[0];
   const subtotal =
     quote?.subtotal ?? items.reduce((s, it) => s + it.qty * it.price, 0);
-  const gst = quote?.gst ?? Math.round(subtotal * org.gstRate);
-  const total = quote?.total ?? subtotal + gst;
+  const discount =
+    quote?.discount ??
+    Math.round((subtotal * (deal.discountPercent ?? 0)) / 100);
+  const gst = quote?.gst ?? Math.round((subtotal - discount) * org.gstRate);
+  const total = quote?.total ?? subtotal - discount + gst;
   const quoteDate = quote ? new Date(quote.createdAt) : new Date();
   const quoteNo = quote?.number ?? 'DRAFT';
 
@@ -165,6 +168,12 @@ export default function QuotePage() {
             <span className="text-neutral-500">Subtotal</span>
             <span className="tabular-nums">{formatINR(subtotal)}</span>
           </div>
+          {discount > 0 && (
+            <div className="flex justify-between">
+              <span className="text-neutral-500">Discount</span>
+              <span className="tabular-nums">−{formatINR(discount)}</span>
+            </div>
+          )}
           <div className="flex justify-between">
             <span className="text-neutral-500">
               GST ({Math.round(org.gstRate * 100)}%)

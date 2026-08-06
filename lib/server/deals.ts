@@ -7,6 +7,49 @@ import { prisma, toPaise } from './db';
 
 const CLOSED: DealStage[] = ['won', 'lost'];
 
+/** Line-item total minus the deal discount, in paise. */
+export function discountedValuePaise(
+  itemsTotalPaise: bigint,
+  discountBps: number,
+): bigint {
+  return (
+    (itemsTotalPaise * BigInt(10000 - discountBps)) / BigInt(10000)
+  );
+}
+
+/**
+ * Sets the deal's discount and recomputes the value from its line items.
+ * Closed deals are immutable.
+ */
+export async function setDealDiscount(
+  actor: User,
+  dealId: string,
+  discountBps: number,
+) {
+  return prisma.$transaction(async (tx) => {
+    const deal = await tx.deal.findUniqueOrThrow({
+      where: { id: dealId },
+      include: { lineItems: true },
+    });
+    if (CLOSED.includes(deal.stage)) {
+      throw new Error('Closed deals cannot be modified');
+    }
+    const itemsTotal = deal.lineItems.reduce(
+      (s, it) => s + it.pricePaise * BigInt(it.qty),
+      BigInt(0),
+    );
+    return tx.deal.update({
+      where: { id: dealId },
+      data: {
+        discountBps,
+        ...(deal.lineItems.length > 0
+          ? { valuePaise: discountedValuePaise(itemsTotal, discountBps) }
+          : {}),
+      },
+    });
+  });
+}
+
 /**
  * Moves a deal to a stage inside one transaction: sets/clears closedAt and
  * lostReason, notifies the owner (when someone else moved it) and the
@@ -97,13 +140,17 @@ export async function setDealLineItems(
           pricePaise: toPaise(it.price),
         })),
       });
-      const totalPaise = items.reduce(
-        (sum, it) => sum + Math.round(it.price * 100) * it.qty,
-        0,
+      const totalPaise = BigInt(
+        items.reduce(
+          (sum, it) => sum + Math.round(it.price * 100) * it.qty,
+          0,
+        ),
       );
       await tx.deal.update({
         where: { id: dealId },
-        data: { valuePaise: BigInt(totalPaise) },
+        data: {
+          valuePaise: discountedValuePaise(totalPaise, deal.discountBps),
+        },
       });
     }
     return tx.deal.findUniqueOrThrow({

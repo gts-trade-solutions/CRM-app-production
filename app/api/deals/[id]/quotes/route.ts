@@ -30,27 +30,54 @@ export async function POST(
     );
   }
 
+  // Discounts above the org threshold need an approved sign-off covering
+  // (at least) the deal's current discount.
+  const org = await prisma.orgSettings.findUniqueOrThrow({ where: { id: 1 } });
+  if (deal.discountBps > org.discountThresholdBps) {
+    const approved = await prisma.approval.findFirst({
+      where: {
+        dealId: deal.id,
+        status: 'approved',
+        discountBps: { gte: deal.discountBps },
+      },
+    });
+    if (!approved) {
+      return NextResponse.json(
+        {
+          error: `A ${deal.discountBps / 100}% discount needs manager approval before quoting (threshold ${org.discountThresholdBps / 100}%)`,
+          approvalRequired: true,
+        },
+        { status: 409 },
+      );
+    }
+  }
+
   const quote = await prisma.$transaction(async (tx) => {
-    const org = await tx.orgSettings.findUniqueOrThrow({ where: { id: 1 } });
+    const settings = await tx.orgSettings.findUniqueOrThrow({
+      where: { id: 1 },
+    });
     const subtotal = deal.lineItems.reduce(
       (s, it) => s + it.pricePaise * BigInt(it.qty),
       BigInt(0),
     );
-    const gst =
-      (subtotal * BigInt(org.gstRateBps)) / BigInt(10000);
+    const discount =
+      (subtotal * BigInt(deal.discountBps)) / BigInt(10000);
+    const taxable = subtotal - discount;
+    const gst = (taxable * BigInt(settings.gstRateBps)) / BigInt(10000);
     const now = new Date();
-    const number = `Q-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}-${String(org.quoteCounter).padStart(4, '0')}`;
+    const number = `Q-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}-${String(settings.quoteCounter).padStart(4, '0')}`;
     await tx.orgSettings.update({
       where: { id: 1 },
-      data: { quoteCounter: org.quoteCounter + 1 },
+      data: { quoteCounter: settings.quoteCounter + 1 },
     });
     return tx.quote.create({
       data: {
         dealId: deal.id,
         number,
         subtotalPaise: subtotal,
+        discountPaise: discount,
         gstPaise: gst,
-        totalPaise: subtotal + gst,
+        totalPaise: taxable + gst,
         createdById: ctx.actor.id,
       },
     });

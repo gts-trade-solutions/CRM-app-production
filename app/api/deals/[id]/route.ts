@@ -9,7 +9,11 @@ import {
   parseBody,
   unauthenticated,
 } from '@/lib/server/api';
-import { moveDealStage, setDealLineItems } from '@/lib/server/deals';
+import {
+  moveDealStage,
+  setDealDiscount,
+  setDealLineItems,
+} from '@/lib/server/deals';
 import { serializeDeal, serializeQuote } from '@/lib/server/serialize';
 
 export const dynamic = 'force-dynamic';
@@ -33,12 +37,31 @@ export async function GET(
       contact: { select: { id: true, name: true, accountId: true } },
       lineItems: { include: { product: { select: { name: true, sku: true } } } },
       quotes: { orderBy: { createdAt: 'desc' } },
+      approvals: {
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+        include: {
+          requestedBy: { select: { id: true, name: true } },
+          decider: { select: { id: true, name: true } },
+        },
+      },
     },
   });
   if (!deal) return notFound();
   return NextResponse.json({
     deal: serializeDeal(deal),
     quotes: deal.quotes.map(serializeQuote),
+    approvals: deal.approvals.map((a) => ({
+      id: a.id,
+      discountPercent: a.discountBps / 100,
+      status: a.status,
+      note: a.note,
+      decisionNote: a.decisionNote,
+      requestedBy: a.requestedBy,
+      decider: a.decider,
+      createdAt: a.createdAt.toISOString(),
+      decidedAt: a.decidedAt?.toISOString() ?? null,
+    })),
   });
 }
 
@@ -59,6 +82,8 @@ const patchSchema = z.object({
       }),
     )
     .optional(),
+  /** Discount percent 0–50, applied to the line-item total. */
+  discountPercent: z.number().min(0).max(50).optional(),
   archived: z.boolean().optional(),
 });
 
@@ -90,6 +115,13 @@ export async function PATCH(
     }
     if (input.lineItems) {
       await setDealLineItems(ctx.actor, existing.id, input.lineItems);
+    }
+    if (input.discountPercent != null) {
+      await setDealDiscount(
+        ctx.actor,
+        existing.id,
+        Math.round(input.discountPercent * 100),
+      );
     }
     const closed = ['won', 'lost'].includes(input.stage ?? existing.stage);
     const hasItems =

@@ -24,8 +24,11 @@ import {
 import {
   useCreateQuote,
   useDeal,
+  useDecideApproval,
   useProducts,
+  useRequestApproval,
   useSetQuoteStatus,
+  useSettings,
   useStageConfig,
   useUpdateDeal,
 } from '@/lib/api/crm-hooks';
@@ -84,6 +87,9 @@ export default function DealDetailPage() {
   const updateDeal = useUpdateDeal(params.id);
   const createQuote = useCreateQuote(params.id);
   const setQuoteStatus = useSetQuoteStatus(params.id);
+  const requestApproval = useRequestApproval(params.id);
+  const decideApproval = useDecideApproval(params.id);
+  const { data: settings } = useSettings();
 
   const [lostOpen, setLostOpen] = useState(false);
   const [lostReason, setLostReason] = useState('');
@@ -125,11 +131,25 @@ export default function DealDetailPage() {
     );
   }
 
-  const { deal, quotes } = data;
+  const { deal, quotes, approvals } = data;
   const contact = contactData?.contact;
   const isClosed = deal.stage === 'won' || deal.stage === 'lost';
   const items = deal.lineItems ?? [];
   const itemsTotal = items.reduce((s, it) => s + it.qty * it.price, 0);
+  const discountAmount = Math.round(
+    (itemsTotal * deal.discountPercent) / 100,
+  );
+  const threshold = settings?.org?.discountThresholdPercent ?? 10;
+  const needsApproval = deal.discountPercent > threshold;
+  const latestApproval = approvals[0];
+  const hasApproved = approvals.some(
+    (a) => a.status === 'approved' && a.discountPercent >= deal.discountPercent,
+  );
+  const canDecide =
+    me &&
+    hasCapability(me.role, 'approve_discounts') &&
+    latestApproval?.status === 'pending' &&
+    latestApproval.requestedBy.id !== me.id;
 
   function move(stage: DealStage, reason?: string) {
     updateDeal.mutate({ stage, lostReason: reason });
@@ -415,17 +435,138 @@ export default function DealDetailPage() {
                         )}
                       </TableRow>
                     ))}
+                    {deal.discountPercent > 0 && (
+                      <TableRow>
+                        <TableCell
+                          colSpan={3}
+                          className="text-right text-muted-foreground"
+                        >
+                          Discount ({deal.discountPercent}%)
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                          −{formatINR(discountAmount)}
+                        </TableCell>
+                        {!isClosed && <TableCell />}
+                      </TableRow>
+                    )}
                     <TableRow>
                       <TableCell colSpan={3} className="text-right font-medium">
                         Total
                       </TableCell>
                       <TableCell className="text-right font-semibold tabular-nums">
-                        {formatINR(itemsTotal)}
+                        {formatINR(itemsTotal - discountAmount)}
                       </TableCell>
                       {!isClosed && <TableCell />}
                     </TableRow>
                   </TableBody>
                 </Table>
+              )}
+
+              {/* Discount + approval */}
+              {items.length > 0 && (
+                <div className="space-y-2 rounded-lg border p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Label htmlFor="deal-discount" className="text-sm">
+                      Discount %
+                    </Label>
+                    <Input
+                      id="deal-discount"
+                      type="number"
+                      min={0}
+                      max={50}
+                      disabled={isClosed || updateDeal.isPending}
+                      className="h-9 w-24 tabular-nums"
+                      defaultValue={deal.discountPercent}
+                      key={deal.discountPercent}
+                      onBlur={(e) => {
+                        const v = Math.min(
+                          50,
+                          Math.max(0, Number(e.target.value) || 0),
+                        );
+                        if (v !== deal.discountPercent) {
+                          updateDeal.mutate({ discountPercent: v });
+                        }
+                      }}
+                    />
+                    {needsApproval && !hasApproved && (
+                      <Badge variant="destructive" className="gap-1">
+                        Above {threshold}% — approval needed
+                      </Badge>
+                    )}
+                    {needsApproval && hasApproved && (
+                      <Badge className="border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                        Approved
+                      </Badge>
+                    )}
+                    {needsApproval &&
+                      !hasApproved &&
+                      latestApproval?.status !== 'pending' &&
+                      !isClosed && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={requestApproval.isPending}
+                          onClick={() => requestApproval.mutate('')}
+                        >
+                          Request approval
+                        </Button>
+                      )}
+                  </div>
+                  {latestApproval && (
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <Badge
+                        variant={
+                          latestApproval.status === 'pending'
+                            ? 'secondary'
+                            : latestApproval.status === 'approved'
+                              ? 'outline'
+                              : 'destructive'
+                        }
+                      >
+                        {latestApproval.status}
+                      </Badge>
+                      <span className="text-muted-foreground">
+                        {latestApproval.discountPercent}% requested by{' '}
+                        {latestApproval.requestedBy.name}
+                        {latestApproval.decider &&
+                          ` · decided by ${latestApproval.decider.name}`}
+                        {latestApproval.decisionNote &&
+                          ` — ${latestApproval.decisionNote}`}
+                      </span>
+                      {canDecide && (
+                        <span className="flex gap-1.5">
+                          <Button
+                            size="sm"
+                            className="h-7 bg-emerald-600 hover:bg-emerald-700"
+                            disabled={decideApproval.isPending}
+                            onClick={() =>
+                              decideApproval.mutate({
+                                approvalId: latestApproval.id,
+                                status: 'approved',
+                              })
+                            }
+                          >
+                            Approve
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-destructive"
+                            disabled={decideApproval.isPending}
+                            onClick={() =>
+                              decideApproval.mutate({
+                                approvalId: latestApproval.id,
+                                status: 'rejected',
+                              })
+                            }
+                          >
+                            Reject
+                          </Button>
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
             </CardContent>
           </Card>

@@ -56,6 +56,7 @@ export interface WireDeal {
   owner?: { id: string; name: string };
   stage: DealStage;
   value: number;
+  discountPercent: number;
   expectedClose: string;
   closedAt: string | null;
   lostReason: string | null;
@@ -75,10 +76,23 @@ export interface WireQuote {
   dealId: string;
   number: string;
   subtotal: number;
+  discount: number;
   gst: number;
   total: number;
   status: 'draft' | 'sent' | 'accepted';
   createdAt: string;
+}
+
+export interface WireApproval {
+  id: string;
+  discountPercent: number;
+  status: 'pending' | 'approved' | 'rejected';
+  note: string;
+  decisionNote: string;
+  requestedBy: { id: string; name: string };
+  decider: { id: string; name: string } | null;
+  createdAt: string;
+  decidedAt: string | null;
 }
 
 export interface WireProduct {
@@ -105,6 +119,7 @@ export interface OrgSettingsWire {
   quoteValidityDays: number;
   gstRate: number;
   quoteTerms: string[];
+  discountThresholdPercent: number;
 }
 
 export type StageConfigMap = Record<
@@ -272,7 +287,45 @@ export function useDeal(id: string) {
   return useQuery({
     queryKey: ['deal', id],
     queryFn: () =>
-      api<{ deal: WireDeal; quotes: WireQuote[] }>(`/api/deals/${id}`),
+      api<{ deal: WireDeal; quotes: WireQuote[]; approvals: WireApproval[] }>(
+        `/api/deals/${id}`,
+      ),
+  });
+}
+
+export function useRequestApproval(dealId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (note: string) =>
+      api<{ id: string }>(`/api/deals/${dealId}/approvals`, {
+        method: 'POST',
+        json: { note },
+      }),
+    onSuccess: () => {
+      toast.success('Approval requested — your manager has been notified');
+      qc.invalidateQueries({ queryKey: ['deal', dealId] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+export function useDecideApproval(dealId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      approvalId: string;
+      status: 'approved' | 'rejected';
+      decisionNote?: string;
+    }) =>
+      api(`/api/approvals/${input.approvalId}`, {
+        method: 'PATCH',
+        json: { status: input.status, decisionNote: input.decisionNote ?? '' },
+      }),
+    onSuccess: () => {
+      toast.success('Decision recorded');
+      qc.invalidateQueries({ queryKey: ['deal', dealId] });
+    },
+    onError: (e: Error) => toast.error(e.message),
   });
 }
 

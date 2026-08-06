@@ -818,6 +818,7 @@ function OrgTab() {
     quoteValidityDays: string;
     gstRate: string;
     quoteTerms: string;
+    discountThreshold: string;
   } | null>(null);
 
   const current = form ?? {
@@ -827,6 +828,7 @@ function OrgTab() {
     quoteValidityDays: String(org?.quoteValidityDays ?? 15),
     gstRate: String(Math.round((org?.gstRate ?? 0.18) * 100)),
     quoteTerms: (org?.quoteTerms ?? []).join('\n'),
+    discountThreshold: String(org?.discountThresholdPercent ?? 10),
   };
 
   return (
@@ -884,6 +886,18 @@ function OrgTab() {
               onChange={(e) => setForm({ ...current, gstRate: e.target.value })}
             />
           </div>
+          <div className="space-y-1.5">
+            <Label>Discount approval above (%)</Label>
+            <Input
+              type="number"
+              min={0}
+              max={50}
+              value={current.discountThreshold}
+              onChange={(e) =>
+                setForm({ ...current, discountThreshold: e.target.value })
+              }
+            />
+          </div>
         </div>
         <div className="space-y-1.5">
           <Label>Quotation terms (one per line)</Label>
@@ -909,6 +923,10 @@ function OrgTab() {
                   .split('\n')
                   .map((t) => t.trim())
                   .filter(Boolean),
+                discountThresholdPercent: Math.min(
+                  50,
+                  Math.max(0, Number(current.discountThreshold) || 10),
+                ),
               },
             })
           }

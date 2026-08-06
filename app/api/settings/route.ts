@@ -34,6 +34,7 @@ export async function GET(req: NextRequest) {
           quoteValidityDays: org.quoteValidityDays,
           gstRate: org.gstRateBps / 10000,
           quoteTerms: JSON.parse(org.quoteTermsJson) as string[],
+          discountThresholdPercent: org.discountThresholdBps / 100,
         }
       : null,
     stages: Object.fromEntries(
@@ -54,6 +55,7 @@ const patchSchema = z.object({
       quoteValidityDays: z.number().int().min(1),
       gstRate: z.number().min(0).max(1),
       quoteTerms: z.array(z.string()),
+      discountThresholdPercent: z.number().min(0).max(50).optional(),
     })
     .optional(),
   stages: z
@@ -87,6 +89,13 @@ export async function PATCH(req: NextRequest) {
         quoteValidityDays: input.org.quoteValidityDays,
         gstRateBps: Math.round(input.org.gstRate * 10000),
         quoteTermsJson: JSON.stringify(input.org.quoteTerms),
+        ...(input.org.discountThresholdPercent != null
+          ? {
+              discountThresholdBps: Math.round(
+                input.org.discountThresholdPercent * 100,
+              ),
+            }
+          : {}),
       },
     });
   }

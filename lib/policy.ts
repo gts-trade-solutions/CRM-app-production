@@ -19,6 +19,7 @@ export type Capability =
   | 'reassign_records'
   | 'archive_records'
   | 'assign_activities'
+  | 'approve_discounts'
   | 'export_csv';
 
 const MATRIX: Record<Role, Capability[]> = {
@@ -36,6 +37,7 @@ const MATRIX: Record<Role, Capability[]> = {
     'reassign_records',
     'archive_records',
     'assign_activities',
+    'approve_discounts',
     'export_csv',
   ],
   regional_manager: [
@@ -47,6 +49,7 @@ const MATRIX: Record<Role, Capability[]> = {
     'reassign_records',
     'archive_records',
     'assign_activities',
+    'approve_discounts',
     'export_csv',
   ],
   team_lead: [
@@ -58,6 +61,7 @@ const MATRIX: Record<Role, Capability[]> = {
     'reassign_records',
     'archive_records',
     'assign_activities',
+    'approve_discounts',
     'export_csv',
   ],
   sales_rep: ['view_reports', 'view_campaigns', 'export_csv'],

@@ -92,6 +92,8 @@ model User {
   quotes          Quote[]
   target          Target?
   auditEvents     AuditEvent[]
+  approvalRequests Approval[] @relation("ApprovalRequester")
+  approvalDecisions Approval[] @relation("ApprovalDecider")
 
   @@index([managerId])
 }
@@ -234,9 +236,12 @@ model Deal {
   createdAt     DateTime  @default(now())
   // Outcome-logging columns (AI groundwork — populated from day one)
   scoreAtConversion Int?
+  /** Discount applied to the line-item total, in basis points. */
+  discountBps   Int       @default(0)
 
   lineItems DealLineItem[]
   quotes    Quote[]
+  approvals Approval[]
 
   @@index([ownerId, stage])
   @@index([contactId])
@@ -263,6 +268,7 @@ model Quote {
   deal          Deal        @relation(fields: [dealId], references: [id], onDelete: Cascade)
   number        String      @unique
   subtotalPaise BigInt
+  discountPaise BigInt      @default(0)
   gstPaise      BigInt
   totalPaise    BigInt
   status        QuoteStatus @default(draft)
@@ -330,6 +336,34 @@ model OrgSettings {
   gstRateBps        Int    @default(1800) // basis points: 1800 = 18%
   quoteTermsJson    String @db.Text // JSON array of strings
   quoteCounter      Int    @default(1)
+  /** Discounts above this (basis points) need manager approval to quote. */
+  discountThresholdBps Int @default(1000)
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
+/** Manager sign-off requests — first use: discounts above the threshold. */
+model Approval {
+  id            String         @id @default(cuid())
+  dealId        String
+  deal          Deal           @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  type          String         @default("discount")
+  discountBps   Int
+  status        ApprovalStatus @default(pending)
+  note          String         @default("")
+  decisionNote  String         @default("")
+  requestedById String
+  requestedBy   User           @relation("ApprovalRequester", fields: [requestedById], references: [id])
+  deciderId     String?
+  decider       User?          @relation("ApprovalDecider", fields: [deciderId], references: [id], onDelete: SetNull)
+  decidedAt     DateTime?
+  createdAt     DateTime       @default(now())
+
+  @@index([dealId, status])
 }
 
 model StageSetting {
