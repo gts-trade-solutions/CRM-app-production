@@ -4,6 +4,7 @@
 // budget/spend/status manually editable by managers.
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { format } from 'date-fns';
 import { Megaphone, Pencil, Plus } from 'lucide-react';
 import {
@@ -266,13 +267,23 @@ export default function CampaignsPage() {
                       <p className="text-xs text-muted-foreground">Secured</p>
                     </div>
                   </div>
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    {m.won > 0
-                      ? `Return so far: ${roi.toFixed(1)}× of ${campaign.spend ? 'spend' : 'budget'} — updates automatically as attributed deals close.`
-                      : m.convertedCount > 0
-                        ? 'Converted leads in pipeline — revenue updates automatically when orders are secured.'
-                        : 'No conversions attributed yet.'}
-                  </p>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs text-muted-foreground">
+                      {m.won > 0
+                        ? `Return so far: ${roi.toFixed(1)}× of ${campaign.spend ? 'spend' : 'budget'} — updates automatically as attributed deals close.`
+                        : m.convertedCount > 0
+                          ? 'Converted leads in pipeline — revenue updates automatically when orders are secured.'
+                          : 'No conversions attributed yet.'}
+                    </p>
+                    {m.leadCount > 0 && (
+                      <Link
+                        href={`/leads?campaign=${campaign.id}`}
+                        className="text-xs font-medium text-primary underline-offset-4 hover:underline"
+                      >
+                        View leads →
+                      </Link>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             );

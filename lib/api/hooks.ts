@@ -52,6 +52,7 @@ export interface WireLead {
   activityCount?: number;
   attachmentCount?: number;
   contactId?: string | null;
+  convertedDealId?: string | null;
   attachments?: Array<{
     id: string;
     name: string;
@@ -129,6 +130,8 @@ export interface LeadFilters {
   status?: string;
   channel?: string;
   q?: string;
+  ownerId?: string;
+  campaignId?: string;
 }
 
 export function useLeads(filters: LeadFilters) {
@@ -139,6 +142,9 @@ export function useLeads(filters: LeadFilters) {
   if (filters.channel && filters.channel !== 'all')
     params.set('channel', filters.channel);
   if (filters.q) params.set('q', filters.q);
+  if (filters.ownerId && filters.ownerId !== 'all')
+    params.set('ownerId', filters.ownerId);
+  if (filters.campaignId) params.set('campaignId', filters.campaignId);
 
   return useQuery({
     queryKey: ['leads', filters],

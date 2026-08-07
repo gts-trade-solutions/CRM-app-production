@@ -4,11 +4,12 @@
 // connectivity the lead goes to a durable local outbox and syncs (with an
 // idempotency key) the moment the browser is back online.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Paperclip, Shuffle, WifiOff, X } from 'lucide-react';
+import { AlertTriangle, Paperclip, Shuffle, WifiOff, X } from 'lucide-react';
+import { api } from '@/lib/api/client';
 import {
   useApiCampaigns,
   useApiUsers,
@@ -63,6 +64,7 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
   const [campaignId, setCampaignId] = useState<string>('none');
   const [files, setFiles] = useState<File[]>([]);
   const [consent, setConsent] = useState(false);
+  const [duplicate, setDuplicate] = useState<string | null>(null);
   const online = typeof navigator === 'undefined' ? true : navigator.onLine;
 
   const {
@@ -85,6 +87,38 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
       notes: '',
     },
   });
+
+  const phoneValue = watch('phone');
+  const emailValue = watch('email');
+
+  // Live duplicate warning — debounced server check against every lead
+  // and contact in the organisation.
+  useEffect(() => {
+    if (!open) return;
+    const phone = (phoneValue ?? '').replace(/\D/g, '');
+    const email = (emailValue ?? '').trim();
+    if (phone.length < 6 && !email.includes('@')) {
+      setDuplicate(null);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const r = await api<{
+          match: { kind: string; name: string; ownerName: string } | null;
+        }>(
+          `/api/dupes/check?phone=${encodeURIComponent(phone)}&email=${encodeURIComponent(email)}`,
+        );
+        setDuplicate(
+          r.match
+            ? `Possible duplicate: ${r.match.kind} “${r.match.name}” owned by ${r.match.ownerName}`
+            : null,
+        );
+      } catch {
+        setDuplicate(null);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [open, phoneValue, emailValue]);
 
   if (!me) return null;
 
@@ -248,6 +282,13 @@ export function LeadFormDialog({ trigger }: { trigger: React.ReactNode }) {
               </Select>
             </div>
           </div>
+
+          {duplicate && (
+            <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-2.5 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              {duplicate}
+            </div>
+          )}
 
           {activeCampaigns.length > 0 && (
             <div className="space-y-1.5">

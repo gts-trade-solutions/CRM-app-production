@@ -6,7 +6,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { format } from 'date-fns';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -73,6 +73,7 @@ import { Separator } from '@/components/ui/separator';
 
 export default function LeadDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const qc = useQueryClient();
   const { data: me } = useMe();
   const { data: lead, isLoading, error } = useLead(params.id);
@@ -472,8 +473,29 @@ export default function LeadDetailPage() {
 
           {lead.status === 'converted' && (
             <Card>
-              <CardContent className="p-4 text-sm">
-                Converted — the contact and deal live in the pipeline.
+              <CardContent className="flex flex-wrap items-center gap-2 p-4 text-sm">
+                <span>Converted —</span>
+                {lead.convertedDealId ? (
+                  <Link
+                    href={`/pipeline/${lead.convertedDealId}`}
+                    className="font-medium text-primary underline-offset-4 hover:underline"
+                  >
+                    open the deal
+                  </Link>
+                ) : (
+                  <span>see the pipeline</span>
+                )}
+                {lead.contactId && (
+                  <>
+                    <span>·</span>
+                    <Link
+                      href={`/contacts/${lead.contactId}`}
+                      className="font-medium text-primary underline-offset-4 hover:underline"
+                    >
+                      open the contact
+                    </Link>
+                  </>
+                )}
               </CardContent>
             </Card>
           )}
@@ -628,9 +650,11 @@ export default function LeadDetailPage() {
                     value: Number(dealValue) || 0,
                   },
                   {
-                    onSuccess: () => {
+                    onSuccess: (r) => {
                       setConvertOpen(false);
                       qc.invalidateQueries({ queryKey: ['lead', lead.id] });
+                      // Straight to the deal that was just created.
+                      router.push(`/pipeline/${r.dealId}`);
                     },
                   },
                 )

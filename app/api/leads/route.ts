@@ -34,10 +34,17 @@ export async function GET(req: NextRequest) {
   const status = searchParams.get('status') ?? undefined;
   const channel = searchParams.get('channel') ?? undefined;
   const q = searchParams.get('q')?.trim();
+  const ownerId = searchParams.get('ownerId') ?? undefined;
+  const campaignId = searchParams.get('campaignId') ?? undefined;
   const { page, pageSize, skip, take } = pagination(req);
 
   const where = {
-    ownerId: { in: ctx.visible },
+    // A specific owner filter still stays inside the actor's scope.
+    ownerId:
+      ownerId && ctx.visible.includes(ownerId)
+        ? ownerId
+        : { in: ctx.visible },
+    ...(campaignId ? { campaignId } : {}),
     ...(status
       ? { status: status as 'new' | 'contacted' | 'qualified' | 'converted' | 'disqualified' }
       : {}),

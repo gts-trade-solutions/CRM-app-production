@@ -4,7 +4,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { format } from 'date-fns';
 import {
   Archive,
@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import {
   useContact,
+  useCreateDeal,
   useStageConfig,
   useUpdateContact,
 } from '@/lib/api/crm-hooks';
@@ -51,13 +52,18 @@ import { Label } from '@/components/ui/label';
 
 export default function ContactDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const { data: me } = useMe();
   const { data, isLoading, error } = useContact(params.id);
   const updateContact = useUpdateContact(params.id);
+  const createDeal = useCreateDeal();
   const stages = useStageConfig();
 
   const [editOpen, setEditOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [dealOpen, setDealOpen] = useState(false);
+  const [dealTitle, setDealTitle] = useState('');
+  const [dealValue, setDealValue] = useState('');
   const [edit, setEdit] = useState({
     name: '',
     title: '',
@@ -250,8 +256,26 @@ export default function ContactDetailPage() {
 
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-lg">Deals</CardTitle>
-              <CardDescription>{deals.length} in total</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-lg">Deals</CardTitle>
+                  <CardDescription>{deals.length} in total</CardDescription>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setDealTitle(
+                      `${contact.account?.name ?? contact.company ?? contact.name} — New opportunity`,
+                    );
+                    setDealValue('');
+                    setDealOpen(true);
+                  }}
+                >
+                  <Briefcase />
+                  New deal
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {deals.length === 0 ? (
@@ -366,6 +390,61 @@ export default function ContactDetailPage() {
               }
             >
               Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* New deal */}
+      <Dialog open={dealOpen} onOpenChange={setDealOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>New deal for {contact.name}</DialogTitle>
+            <DialogDescription>
+              Opens as a Cold deal in the pipeline — you&apos;ll be taken
+              straight to it.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="nd-title">Deal title</Label>
+              <Input
+                id="nd-title"
+                value={dealTitle}
+                onChange={(e) => setDealTitle(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="nd-value">Deal value (₹)</Label>
+              <Input
+                id="nd-value"
+                type="number"
+                min={0}
+                value={dealValue}
+                onChange={(e) => setDealValue(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              disabled={!dealTitle.trim() || createDeal.isPending}
+              onClick={() =>
+                createDeal.mutate(
+                  {
+                    contactId: contact.id,
+                    title: dealTitle,
+                    value: Number(dealValue) || 0,
+                  },
+                  {
+                    onSuccess: (r) => {
+                      setDealOpen(false);
+                      router.push(`/pipeline/${r.id}`);
+                    },
+                  },
+                )
+              }
+            >
+              Create deal
             </Button>
           </DialogFooter>
         </DialogContent>

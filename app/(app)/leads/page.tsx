@@ -5,6 +5,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { format } from 'date-fns';
 import {
   ArrowRightCircle,
@@ -19,6 +20,7 @@ import {
 } from 'lucide-react';
 import {
   WireLead,
+  useApiCampaigns,
   useLeads,
   useMe,
   useApiUsers,
@@ -85,12 +87,23 @@ function useLeadStatusMutation() {
 export default function LeadsPage() {
   const { data: me } = useMe();
   const { data: users } = useApiUsers();
+  const router = useRouter();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | LeadStatus>('all');
   const [channelFilter, setChannelFilter] = useState<'all' | 'online' | 'offline'>('all');
   const [sortBy, setSortBy] = useState<'newest' | 'score'>('newest');
+  const [ownerFilter, setOwnerFilter] = useState('all');
+  // Campaign click-through: /leads?campaign=<id> (read once, no Suspense needed)
+  const [campaignFilter, setCampaignFilter] = useState<string | undefined>(
+    () =>
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('campaign') ??
+          undefined
+        : undefined,
+  );
+  const { data: campaigns } = useApiCampaigns();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [reassignTo, setReassignTo] = useState('');
   const [converting, setConverting] = useState<WireLead | null>(null);
@@ -130,7 +143,13 @@ export default function LeadsPage() {
     status: statusFilter,
     channel: channelFilter,
     q: debouncedQ,
+    ownerId: ownerFilter,
+    campaignId: campaignFilter,
   });
+  const activeCampaignName = campaignFilter
+    ? (campaigns ?? []).find((c) => c.id === campaignFilter)?.name ??
+      'campaign'
+    : null;
 
   const leads = useMemo(() => {
     const rows = data?.leads ?? [];
@@ -251,6 +270,27 @@ export default function LeadsPage() {
             <SelectItem value="offline">Offline</SelectItem>
           </SelectContent>
         </Select>
+        {reassignTargets.length > 1 && (
+          <Select
+            value={ownerFilter}
+            onValueChange={(v) => {
+              setOwnerFilter(v);
+              setPage(1);
+            }}
+          >
+            <SelectTrigger className="w-[170px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All owners</SelectItem>
+              {reassignTargets.map((u) => (
+                <SelectItem key={u.id} value={u.id}>
+                  {u.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <Select
           value={sortBy}
           onValueChange={(v) => setSortBy(v as typeof sortBy)}
@@ -263,6 +303,22 @@ export default function LeadsPage() {
             <SelectItem value="score">Sort: Score</SelectItem>
           </SelectContent>
         </Select>
+        {activeCampaignName && (
+          <Badge variant="secondary" className="h-10 gap-1.5 px-3">
+            Campaign: {activeCampaignName}
+            <button
+              aria-label="Clear campaign filter"
+              onClick={() => {
+                setCampaignFilter(undefined);
+                setPage(1);
+                window.history.replaceState(null, '', '/leads');
+              }}
+              className="hover:text-destructive"
+            >
+              ×
+            </button>
+          </Badge>
+        )}
       </div>
 
       {canReassign && selected.size > 0 && (
@@ -568,7 +624,13 @@ export default function LeadsPage() {
                     dealTitle,
                     value: Number(dealValue) || 0,
                   },
-                  { onSuccess: () => setConverting(null) },
+                  {
+                    onSuccess: (r) => {
+                      setConverting(null);
+                      // Land the rep on the deal they just created.
+                      router.push(`/pipeline/${r.dealId}`);
+                    },
+                  },
                 );
               }}
             >

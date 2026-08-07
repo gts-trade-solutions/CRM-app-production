@@ -23,7 +23,16 @@ export async function GET(
     include: {
       owner: { select: { id: true, name: true } },
       attachments: true,
-      contact: { select: { id: true } },
+      contact: {
+        select: {
+          id: true,
+          deals: {
+            select: { id: true },
+            orderBy: { createdAt: 'asc' },
+            take: 1,
+          },
+        },
+      },
     },
   });
   if (!lead) return notFound();
@@ -43,6 +52,8 @@ export async function GET(
     lead: {
       ...serializeLead(lead),
       contactId: lead.contact?.id ?? null,
+      // The deal born from this lead's conversion, if any.
+      convertedDealId: lead.contact?.deals[0]?.id ?? null,
       attachments,
     },
   });
