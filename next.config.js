@@ -15,6 +15,11 @@ const csp = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // `next dev` holds file handles on its output directory, so a concurrent
+  // `next build` writing to the same place fails on Windows (EPERM on
+  // .next/trace). NEXT_DIST_DIR lets a verification build use its own
+  // directory — see `npm run build:isolated`. Deploys leave it unset.
+  distDir: process.env.NEXT_DIST_DIR || '.next',
   trailingSlash: false,
   reactStrictMode: true,
   async headers() {

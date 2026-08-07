@@ -30,11 +30,20 @@ one-click persona grid.
 | Script | Purpose |
 |---|---|
 | `npm run dev` / `build` / `start` | Next.js lifecycle |
+| `npm run build:isolated` | Build into `.next-build` — safe while `dev` is running |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint (next/core-web-vitals) |
 | `npm test` | Unit tests (no database needed) |
 | `npm run test:integration` | Integration tests against `DATABASE_URL` |
 | `npm run db:push` / `db:seed` | Prisma schema push / demo seed |
+
+`dev` and `build` both own `.next`, and a build clears that directory before
+it writes. Running them together therefore knocks the dev server's chunks out
+from under it — the symptom is a dev server that dies or starts throwing
+module-not-found errors, plus `EPERM`/`ENOENT` failures in the build. Use
+`build:isolated` (it sets `NEXT_DIST_DIR=.next-build`, honoured by
+`next.config.js`) whenever you want to verify a build without stopping dev.
+Deploys leave `NEXT_DIST_DIR` unset and use the plain `build` + `start` pair.
 
 CI (GitHub Actions) runs typecheck, lint, both test suites (against a
 MySQL 8 service container) and the production build on every push/PR.
