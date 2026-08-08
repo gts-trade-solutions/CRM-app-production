@@ -242,7 +242,10 @@ export function ActivityDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="sm:max-w-md">
+      {/* This is the tallest dialog in the app — with the lead picker open it
+          exceeds a laptop viewport — so the title and the action button stay
+          pinned and only the fields between them scroll. */}
+      <DialogContent className="grid max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-y-hidden sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
             {canAssign ? 'Log or assign activity' : 'Log activity'}
@@ -253,7 +256,8 @@ export function ActivityDialog({
               : 'Pick a record and schedule work on it.'}
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4">
+        {/* pr-1 keeps the scrollbar off the inputs' focus rings. */}
+        <div className="space-y-4 overflow-y-auto pr-1">
           {needsPicker && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -273,7 +277,7 @@ export function ActivityDialog({
                     value={leadSearch}
                     onChange={(e) => setLeadSearch(e.target.value)}
                   />
-                  <div className="max-h-56 overflow-y-auto rounded-md border">
+                  <div className="max-h-44 overflow-y-auto rounded-md border">
                     {companies.length === 0 ? (
                       <p className="p-3 text-sm text-muted-foreground">
                         No open leads match.
