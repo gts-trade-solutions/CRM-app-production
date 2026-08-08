@@ -1,8 +1,9 @@
 # Deployment — Ubuntu VPS
 
 Target: a single Ubuntu 22.04/24.04 VPS running MySQL 8, the Next.js app
-under systemd, and nginx in front (TLS via certbot). Templates for the
-service unit and nginx site live in `deploy/`.
+under **PM2**, and nginx in front (TLS via certbot). Templates live in
+`deploy/`: `ecosystem.config.js` (PM2), `nginx.conf`, and
+`salesforce-crm.service` for anyone who prefers systemd instead.
 
 ## 1. Server preparation (once)
 
@@ -11,11 +12,15 @@ sudo apt update && sudo apt upgrade -y
 # Node 20 LTS
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs nginx mysql-server git
+sudo npm install -g pm2
 sudo mysql_secure_installation
 
 # App user + directory
 sudo useradd --system --create-home --shell /bin/bash crm
 sudo mkdir -p /opt/salesforce-crm && sudo chown crm:crm /opt/salesforce-crm
+
+# Log directory PM2 writes to (see deploy/ecosystem.config.js)
+sudo mkdir -p /var/log/salesforce-crm && sudo chown crm:crm /var/log/salesforce-crm
 ```
 
 ### MySQL
@@ -58,46 +63,83 @@ SES_REGION=…
 SES_FROM_ADDRESS=…                              # SES-verified sender
 ```
 
+Do **not** set `NEXT_PUBLIC_DEMO_MODE` on this server. Leaving it out is
+what removes the persona grid from the login page and makes the seed script
+refuse to run. It is read at **build** time, so changing it later means
+rebuilding, not just restarting.
+
 ```bash
 npm ci
 npx prisma db push          # create the schema
-npx prisma db seed          # OPTIONAL: demo data — skip for a clean org
 npm run build
 exit
 ```
 
-> Going live without demo data: skip the seed, then create the first admin
-> by inserting a user row (role `admin`, bcrypt password hash) — or seed,
-> change the admin password hash, and deactivate the demo members from the
-> admin console.
+Creating the first admin comes after the app is up — see
+[First run](#first-run-creating-the-organisation).
 
-## 3. systemd + nginx
+## 3. PM2 + nginx
+
+PM2 runs as the `crm` user, never as root.
 
 ```bash
-sudo cp /opt/salesforce-crm/deploy/salesforce-crm.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now salesforce-crm
-systemctl status salesforce-crm          # expect: active (running)
-curl -s http://127.0.0.1:3000/api/health # expect: {"ok":true,...}
+sudo -iu crm
+cd /opt/salesforce-crm
+pm2 start deploy/ecosystem.config.js
+pm2 status                                # expect: online
+curl -s http://127.0.0.1:3000/api/health  # expect: {"ok":true,...}
 
+# Survive reboots: `pm2 save` records the current process list…
+pm2 save
+exit
+
+# …and this generates the boot service. Run the command it prints.
+sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u crm --hp /home/crm
+
+# Cap the log files — without this they grow until the disk fills.
+sudo -iu crm pm2 install pm2-logrotate
+sudo -iu crm pm2 set pm2-logrotate:max_size 50M
+sudo -iu crm pm2 set pm2-logrotate:retain 14
+```
+
+Then nginx and TLS:
+
+```bash
 sudo cp /opt/salesforce-crm/deploy/nginx.conf /etc/nginx/sites-available/salesforce-crm
 sudo nano /etc/nginx/sites-available/salesforce-crm   # set server_name
 sudo ln -s /etc/nginx/sites-available/salesforce-crm /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default           # or it wins on port 80
 sudo nginx -t && sudo systemctl reload nginx
 
-# TLS
 sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d crm.example.com
 ```
 
-DNS: point an A record for `crm.example.com` at the VPS IP before certbot.
+DNS: point an A record for `crm.example.com` at the VPS IP **before**
+running certbot, or the challenge fails.
+
+### Why a single PM2 instance
+
+`ecosystem.config.js` sets `instances: 1` / `exec_mode: 'fork'` deliberately.
+The API rate limiter counts requests in process memory, so cluster mode gives
+each worker its own counters — four workers turn the 10/min sign-in limit
+into 40/min. Scaling out needs a shared counter store (Redis) first. One
+Node process handles this workload comfortably; add CPU before adding
+workers.
 
 ## 4. Updating a running deployment
 
 ```bash
 sudo -iu crm bash -c 'cd /opt/salesforce-crm && git pull && npm ci && npx prisma db push && npm run build'
-sudo systemctl restart salesforce-crm
+sudo -iu crm pm2 reload salesforce-crm
 ```
+
+`pm2 reload` waits for in-flight requests instead of cutting them; the config
+allows 10s for open SSE streams to close.
+
+If a deploy goes wrong: `git checkout <previous-sha>`, rebuild, reload. Roll
+the database back from the nightly dump only if the schema changed —
+`prisma db push` is not reversible on its own.
 
 (`prisma db push` is the interim schema-sync; switch to
 `prisma migrate deploy` once migration files are adopted.)
@@ -122,7 +164,10 @@ plus the bucket is the full state.
 
 - `https://crm.example.com/api/health` — DB connectivity + user count;
   point an uptime monitor (UptimeRobot etc.) at it.
-- `journalctl -u salesforce-crm -f` — app logs.
+- `sudo -iu crm pm2 logs salesforce-crm` — live app logs.
+- `sudo -iu crm pm2 status` / `pm2 monit` — state, restarts, memory. A
+  climbing restart count is the first sign of a crash loop.
+- `/var/log/salesforce-crm/{out,error}.log` — the same output on disk.
 - `sudo tail -f /var/log/nginx/access.log` — traffic.
 
 ## 7. Firewall
@@ -175,7 +220,10 @@ mail. Check with `aws ses get-account-sending-enabled` and the sending quota.
 - [ ] `NEXT_PUBLIC_DEMO_MODE` **unset** — persona grid gone, seeding blocked
 - [ ] `npm run bootstrap:admin` run once; its password stored in a manager
 - [ ] Invite email actually delivered to a real teammate (not sandboxed)
-- [ ] `systemctl status salesforce-crm` active; `/api/health` ok via https
+- [ ] `pm2 status` online; `/api/health` ok via https
+- [ ] `pm2 save` + `pm2 startup` done — **reboot the VPS once and confirm it
+      comes back up on its own**
+- [ ] `pm2-logrotate` installed; `/var/log/salesforce-crm` not growing
 - [ ] Backup cron installed AND restore drill performed
 - [ ] Uptime monitor pointed at /api/health
 - [ ] ufw enabled; 3306 not exposed
