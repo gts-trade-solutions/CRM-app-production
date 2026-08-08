@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "build:isolated": "node scripts/build-isolated.mjs",
-    "start": "next start",
+    "start": "next start -p 3030",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
