@@ -68,19 +68,29 @@ export function ActivityTimeline({
     <ul className="space-y-3">
       {items.map((a) => {
         const Icon = KIND_ICONS[a.kind];
-        const overdue = !a.completedAt && a.dueAt && isPast(new Date(a.dueAt));
         const schedulable = a.kind !== 'note';
+        // On a record's own timeline, a multi-record task ticks off *this*
+        // record — the whole task is not this page's business.
+        const target = a.targets.find(
+          (t) => t.relatedType === relatedType && t.relatedId === relatedId,
+        );
+        const done = target ? target.completedAt : a.completedAt;
+        const overdue = !done && a.dueAt && isPast(new Date(a.dueAt));
         return (
           <li key={a.id} className="flex items-start gap-3 rounded-lg border p-3">
             {schedulable ? (
               <button
                 onClick={() =>
-                  toggle.mutate({ id: a.id, completed: !a.completedAt })
+                  toggle.mutate({
+                    id: a.id,
+                    completed: !done,
+                    targetId: target?.id,
+                  })
                 }
-                aria-label={a.completedAt ? 'Mark not done' : 'Mark done'}
+                aria-label={done ? 'Mark not done' : 'Mark done'}
                 className="mt-0.5 text-muted-foreground transition-colors hover:text-primary"
               >
-                {a.completedAt ? (
+                {done ? (
                   <CheckCircle2 className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
                 ) : (
                   <Circle className="h-5 w-5" />
@@ -102,6 +112,12 @@ export function ActivityTimeline({
                 <Badge variant="secondary" className="text-[10px]">
                   {ACTIVITY_KIND_LABELS[a.kind]}
                 </Badge>
+                {a.targetsTotal > 1 && (
+                  <Badge variant="outline" className="text-[10px] tabular-nums">
+                    Part of a {a.targetsTotal}-lead task · {a.targetsDone}/
+                    {a.targetsTotal} done
+                  </Badge>
+                )}
                 {overdue && (
                   <Badge variant="destructive" className="text-[10px]">
                     Overdue

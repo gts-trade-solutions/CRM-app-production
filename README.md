@@ -74,7 +74,9 @@ enforced in the UI *and* on the server.
   quotations (draft/sent/accepted) printed from org settings.
 - **Activities** — My Day (overdue/today/upcoming), manager delegation with
   notifications, geo check-in, voice dictation (Web Speech, en-IN),
-  logged emails.
+  logged emails; one task can span several leads and completes when the last
+  is ticked off; tasks sync to phone/desktop calendars via a subscription
+  feed.
 - **Hierarchy** — Sales Head → RM → Team Lead → Rep; every query is scoped
   to the actor's subtree; Team page shows stats + target attainment;
   deactivation hands over open records and reports in one transaction.

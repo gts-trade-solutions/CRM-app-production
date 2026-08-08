@@ -127,7 +127,12 @@ campaign ROI.
   feed, per-role onboarding checklist.
 - **My Day** — overdue/today/upcoming/completed buckets; managers get a
   team tab and schedule-or-assign (assignees notified; "Assigned by"
-  badges); sidebar badge counts due items app-wide.
+  badges); sidebar badge counts due items app-wide. A task may cover
+  several leads at once (`ActivityTarget`): the row shows `2/5 spoken to`
+  and expands into a per-lead checklist, the parent completes exactly when
+  the last lead is ticked, and each lead's own timeline ticks only its own
+  entry. Every dated task is downloadable as `.ics` and appears in the
+  user's calendar subscription.
 - **Leads** — server-paginated list with debounced search, status/channel
   filters, score badges (source quality + value + freshness + engagement
   from real activity counts), paperclip indicators, bulk reassign; detail
@@ -162,6 +167,8 @@ campaign ROI.
 | Voice dictation | Web Speech API (en-IN) on activity notes and email bodies; hidden when unsupported |
 | WhatsApp | `wa.me` deep links with context-prefilled messages (10-digit numbers get 91) |
 | Auto-assignment | `__auto` picks the visible active rep with the fewest open leads |
+| Calendar sync | Per-user iCalendar feed at `/api/calendar/<token>` (RFC 5545, CRLF, 75-octet folding, 30-min `VALARM`, `REFRESH-INTERVAL` 30 min). Added once to Google/Apple/Outlook; the client re-polls, so later tasks and reschedules arrive on their own. Stable `UID` per activity means edits update rather than duplicate. The token is the only credential — 32 random bytes, rotatable from My Day, `no-store`, and a rotation 404s every calendar still on the old URL |
+| Multi-lead tasks | One activity, one `ActivityTarget` per lead; parent completion is derived from the targets, never set directly |
 
 ---
 

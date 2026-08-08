@@ -78,6 +78,18 @@
   --viz-ord-3: #184f95; /* ordinal blue 600 */
   --viz-grid: #e1e0d9;
   --viz-axis: #898781;
+  /* Per-channel ordinal ramps for the source donut: hue carries the channel,
+     the step carries the source within it. Each ramp validated as an ordinal
+     ramp (monotone L, ΔL ≥ 0.06, light end ≥ 2:1) against this surface. */
+  --viz-on-1: #86b6ef;
+  --viz-on-2: #3987e5;
+  --viz-on-3: #256abf;
+  --viz-on-4: #104281;
+  --viz-off-1: #f29d7b;
+  --viz-off-2: #eb6834;
+  --viz-off-3: #c8582c;
+  --viz-off-4: #a54924;
+  --viz-off-5: #81391d;
 }
 .dark {
   --viz-cat-1: #3987e5;
@@ -87,6 +99,17 @@
   --viz-ord-3: #1c5cab; /* ordinal blue 550 */
   --viz-grid: #2c2c2a;
   --viz-axis: #898781;
+  /* Re-stepped for the dark surface, not flipped: the dark end has to clear
+     2:1 against #0a0a0a, so both ramps shift lighter. */
+  --viz-on-1: #b7d3f6;
+  --viz-on-2: #86b6ef;
+  --viz-on-3: #3987e5;
+  --viz-on-4: #184f95;
+  --viz-off-1: #eeb49d;
+  --viz-off-2: #e3835c;
+  --viz-off-3: #d95926;
+  --viz-off-4: #ae471e;
+  --viz-off-5: #773115;
 }
 
 /* Hide horizontal scrollbar while keeping scrollability (kanban board). */

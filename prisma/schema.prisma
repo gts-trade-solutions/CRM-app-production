@@ -80,6 +80,9 @@ model User {
   region       String
   title        String
   active       Boolean  @default(true)
+  // Secret used by the calendar-subscription URL. Calendar clients cannot log
+  // in, so this token is the credential — rotatable, and null until issued.
+  calendarToken String? @unique
   createdAt    DateTime @default(now())
 
   leads           Lead[]
@@ -296,7 +299,27 @@ model SalesActivity {
   lng         Float?
   createdAt   DateTime     @default(now())
 
+  targets     ActivityTarget[]
+
   @@index([ownerId, dueAt])
+  @@index([relatedType, relatedId])
+}
+
+/**
+ * One record a task has to touch. A single-record activity has no targets and
+ * uses relatedType/relatedId alone; a "call these five leads" task carries one
+ * target per lead and completes when the last one is ticked off.
+ */
+model ActivityTarget {
+  id          String        @id @default(cuid())
+  activityId  String
+  activity    SalesActivity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  relatedType String // 'lead' | 'deal' | 'contact'
+  relatedId   String
+  completedAt DateTime?
+  createdAt   DateTime      @default(now())
+
+  @@unique([activityId, relatedType, relatedId])
   @@index([relatedType, relatedId])
 }
 

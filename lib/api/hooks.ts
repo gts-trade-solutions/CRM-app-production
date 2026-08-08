@@ -82,6 +82,19 @@ export interface WireActivity {
   createdAt: string;
   relatedName?: string;
   relatedHref?: string;
+  /** Empty for a single-record activity; one entry per record otherwise. */
+  targets: WireActivityTarget[];
+  targetsTotal: number;
+  targetsDone: number;
+}
+
+export interface WireActivityTarget {
+  id: string;
+  relatedType: 'lead' | 'deal' | 'contact';
+  relatedId: string;
+  completedAt: string | null;
+  name: string;
+  href: string;
 }
 
 export interface WireCampaign {
@@ -290,6 +303,8 @@ export interface CreateActivityInput {
   dueAt?: string;
   completedAt?: string;
   location?: { lat: number; lng: number };
+  /** Several records under one task — "call these five leads". */
+  targets?: Array<{ relatedType: 'lead' | 'deal' | 'contact'; relatedId: string }>;
 }
 
 export function useCreateActivity() {
@@ -305,9 +320,51 @@ export function useCreateActivity() {
 export function useToggleActivity() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, completed }: { id: string; completed: boolean }) =>
-      api(`/api/activities/${id}`, { method: 'PATCH', json: { completed } }),
+    mutationFn: ({
+      id,
+      completed,
+      targetId,
+    }: {
+      id: string;
+      completed: boolean;
+      /** Tick one record of a multi-record task instead of the whole task. */
+      targetId?: string;
+    }) =>
+      api(`/api/activities/${id}`, {
+        method: 'PATCH',
+        json: { completed, targetId },
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['activities'] }),
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+/* ----------------------------------------------------------- calendar */
+
+export interface CalendarSubscription {
+  url: string;
+  webcalUrl: string;
+}
+
+export function useCalendarSubscription() {
+  return useQuery({
+    queryKey: ['calendar-subscription'],
+    queryFn: () => api<CalendarSubscription>('/api/calendar/subscription'),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useRotateCalendarLink() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api<CalendarSubscription>('/api/calendar/subscription', {
+        method: 'POST',
+      }),
+    onSuccess: (data) => {
+      qc.setQueryData(['calendar-subscription'], data);
+      toast.success('New link created — re-subscribe on your devices');
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 }

@@ -3,6 +3,7 @@
 
 import type {
   Account,
+  ActivityTarget,
   Contact,
   Deal,
   DealLineItem,
@@ -127,7 +128,14 @@ export function serializeQuote(q: Quote) {
   };
 }
 
-export function serializeActivity(a: SalesActivity & { owner?: Named; createdBy?: Named | null }) {
+export function serializeActivity(
+  a: SalesActivity & {
+    owner?: Named;
+    createdBy?: Named | null;
+    targets?: ActivityTarget[];
+  },
+) {
+  const targets = a.targets ?? [];
   return {
     id: a.id,
     kind: a.kind,
@@ -143,6 +151,16 @@ export function serializeActivity(a: SalesActivity & { owner?: Named; createdBy?
     completedAt: a.completedAt?.toISOString() ?? null,
     location: a.lat != null && a.lng != null ? { lat: a.lat, lng: a.lng } : null,
     createdAt: a.createdAt.toISOString(),
+    // Empty for a single-record activity; one entry per record for a task that
+    // spans several. Display names are attached by the route.
+    targets: targets.map((t) => ({
+      id: t.id,
+      relatedType: t.relatedType,
+      relatedId: t.relatedId,
+      completedAt: t.completedAt?.toISOString() ?? null,
+    })),
+    targetsTotal: targets.length,
+    targetsDone: targets.filter((t) => t.completedAt != null).length,
   };
 }
 

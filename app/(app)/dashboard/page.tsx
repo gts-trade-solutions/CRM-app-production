@@ -19,6 +19,8 @@ import {
   Cell,
   Line,
   LineChart,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -43,6 +45,28 @@ import { OnboardingChecklist } from '@/components/onboarding-checklist';
 
 const ORDINAL = ['var(--viz-ord-1)', 'var(--viz-ord-2)', 'var(--viz-ord-3)'];
 
+// Hue carries the channel, the step carries the source within it. Both ramps
+// are validated ordinal ramps against each surface — see globals.css.
+const ONLINE_RAMP = [
+  'var(--viz-on-1)',
+  'var(--viz-on-2)',
+  'var(--viz-on-3)',
+  'var(--viz-on-4)',
+];
+const OFFLINE_RAMP = [
+  'var(--viz-off-1)',
+  'var(--viz-off-2)',
+  'var(--viz-off-3)',
+  'var(--viz-off-4)',
+  'var(--viz-off-5)',
+];
+
+interface SourceSlice {
+  name: string;
+  channel: string;
+  count: number;
+}
+
 function ChartTooltip({
   active,
   payload,
@@ -55,17 +79,240 @@ function ChartTooltip({
   money?: boolean;
 }) {
   if (!active || !payload?.length) return null;
+  const amount = (v: number) =>
+    money ? formatINR(v) : `${v} lead${v === 1 ? '' : 's'}`;
   return (
     <div className="rounded-md border bg-popover px-3 py-2 text-sm shadow-md">
-      <p className="font-medium">{label}</p>
+      {label && <p className="font-medium">{label}</p>}
       {payload.map((p, i) => (
         <p key={i} className="text-muted-foreground">
-          {money
-            ? formatINR(p.value)
-            : `${p.value} lead${p.value === 1 ? '' : 's'}`}
+          {/* Donut slices and stacked segments carry their own name; axis
+              charts put it in `label` instead. */}
+          {!label && p.name ? `${p.name} — ${amount(p.value)}` : amount(p.value)}
         </p>
       ))}
     </div>
+  );
+}
+
+/**
+ * Leads by source as a donut. Slices are ordered online-first so each channel
+ * forms one contiguous arc; the centre carries the headline channel split so
+ * both levels read at once. The legend doubles as the table view — every
+ * source, its count and its share — so identity is never colour-alone.
+ */
+function SourceDonut({ data }: { data: SourceSlice[] }) {
+  const online = data
+    .filter((d) => d.channel === 'online')
+    .sort((a, b) => b.count - a.count);
+  const offline = data
+    .filter((d) => d.channel !== 'online')
+    .sort((a, b) => b.count - a.count);
+
+  // Ramps are finite; a source beyond the ramp reuses its darkest step rather
+  // than inventing a hue. Nine sources exist and the ramps cover all of them.
+  const slices = [
+    ...online.map((d, i) => ({
+      ...d,
+      fill: ONLINE_RAMP[Math.min(i, ONLINE_RAMP.length - 1)],
+    })),
+    ...offline.map((d, i) => ({
+      ...d,
+      fill: OFFLINE_RAMP[Math.min(i, OFFLINE_RAMP.length - 1)],
+    })),
+  ];
+
+  const total = slices.reduce((s, d) => s + d.count, 0);
+  const onlineCount = online.reduce((s, d) => s + d.count, 0);
+  const offlineCount = total - onlineCount;
+  const pct = (n: number) => (total ? Math.round((n / total) * 100) : 0);
+
+  const group = (label: string, rows: typeof slices, count: number) =>
+    rows.length > 0 && (
+      <div className="space-y-1">
+        <p className="flex items-baseline justify-between text-xs font-medium">
+          <span>{label}</span>
+          <span className="tabular-nums text-muted-foreground">
+            {count} · {pct(count)}%
+          </span>
+        </p>
+        <ul className="space-y-1">
+          {rows.map((d) => (
+            <li
+              key={d.name}
+              className="flex items-center gap-2 text-xs text-muted-foreground"
+            >
+              <span
+                aria-hidden
+                className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                style={{ background: d.fill }}
+              />
+              <span className="truncate">{d.name}</span>
+              <span className="ml-auto shrink-0 tabular-nums">{d.count}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">Leads by source</CardTitle>
+        <CardDescription>
+          Every lead you can see, split by how it was captured.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {total === 0 ? (
+          <p className="py-12 text-center text-sm text-muted-foreground">
+            No leads captured yet.
+          </p>
+        ) : (
+          <div className="flex flex-col items-center gap-5 sm:flex-row">
+            <div className="relative h-[200px] w-[200px] shrink-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={slices}
+                    dataKey="count"
+                    nameKey="name"
+                    innerRadius={62}
+                    outerRadius={95}
+                    paddingAngle={2}
+                    stroke="none"
+                    startAngle={90}
+                    endAngle={-270}
+                    isAnimationActive={false}
+                  >
+                    {slices.map((d) => (
+                      <Cell key={d.name} fill={d.fill} />
+                    ))}
+                  </Pie>
+                  <Tooltip content={<ChartTooltip />} />
+                </PieChart>
+              </ResponsiveContainer>
+              {/* Centre headline — the channel split, read without the legend. */}
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                <p className="text-2xl font-semibold leading-none">
+                  {pct(onlineCount)}%
+                </p>
+                <p className="mt-0.5 text-[11px] font-medium">Online</p>
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  {pct(offlineCount)}% Offline
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {total} lead{total === 1 ? '' : 's'}
+                </p>
+              </div>
+            </div>
+            <div className="w-full space-y-3">
+              {group('Online', slices.slice(0, online.length), onlineCount)}
+              {group('Offline', slices.slice(online.length), offlineCount)}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Open pipeline as one bar split by stage — the whole open book at a glance,
+ * with each stage's share of it. Values sit in the legend rather than on the
+ * segments, which stay too thin to label reliably.
+ */
+function PipelineSplitBar({ data }: { data: Array<{ name: string; value: number }> }) {
+  const total = data.reduce((s, d) => s + d.value, 0);
+  // One row, one key per stage — that is what makes it a single split bar
+  // rather than three bars side by side. Keys are positional because stage
+  // labels are admin-editable and Recharts reads a dot in a dataKey as a
+  // nested path; the label rides along on the Bar's `name` instead.
+  const key = (i: number) => `stage${i}`;
+  const row = data.reduce<Record<string, number>>(
+    (acc, d, i) => ({ ...acc, [key(i)]: d.value }),
+    {},
+  );
+  const filled = data.filter((d) => d.value > 0);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">Open pipeline by stage</CardTitle>
+        <CardDescription>
+          Value of active deals — {formatINR(total)} open in total.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {total === 0 ? (
+          <p className="py-12 text-center text-sm text-muted-foreground">
+            No open deals.
+          </p>
+        ) : (
+          <>
+            <ResponsiveContainer width="100%" height={64}>
+              <BarChart
+                data={[row]}
+                layout="vertical"
+                margin={{ left: 0, right: 0, top: 8, bottom: 8 }}
+                barCategoryGap={0}
+              >
+                <XAxis type="number" hide domain={[0, total]} />
+                <YAxis type="category" hide />
+                <Tooltip
+                  cursor={{ fill: 'transparent' }}
+                  content={<ChartTooltip money />}
+                />
+                {data.map((d, i) => {
+                  // Round only the outermost filled segments so the bar reads
+                  // as one object with two capped ends.
+                  const isFirst = filled[0]?.name === d.name;
+                  const isLast = filled[filled.length - 1]?.name === d.name;
+                  return (
+                    <Bar
+                      key={key(i)}
+                      dataKey={key(i)}
+                      name={d.name}
+                      stackId="pipeline"
+                      fill={ORDINAL[i]}
+                      barSize={40}
+                      radius={[
+                        isFirst ? 4 : 0,
+                        isLast ? 4 : 0,
+                        isLast ? 4 : 0,
+                        isFirst ? 4 : 0,
+                      ]}
+                      // 2px surface gap between segments.
+                      stroke="hsl(var(--card))"
+                      strokeWidth={2}
+                      isAnimationActive={false}
+                    />
+                  );
+                })}
+              </BarChart>
+            </ResponsiveContainer>
+            <ul className="mt-3 space-y-1.5">
+              {data.map((d, i) => (
+                <li key={d.name} className="flex items-center gap-2 text-xs">
+                  <span
+                    aria-hidden
+                    className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                    style={{ background: ORDINAL[i] }}
+                  />
+                  <span className="text-muted-foreground">{d.name}</span>
+                  <span className="ml-auto shrink-0 tabular-nums font-medium">
+                    {formatINR(d.value)}
+                  </span>
+                  <span className="w-10 shrink-0 text-right tabular-nums text-muted-foreground">
+                    {total ? Math.round((d.value / total) * 100) : 0}%
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -283,72 +530,7 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Leads by source</CardTitle>
-            <CardDescription>
-              Colored by capture channel — online vs offline.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="mb-3 flex gap-4 text-xs text-muted-foreground">
-              <span className="flex items-center gap-1.5">
-                <span
-                  className="h-2.5 w-2.5 rounded-sm"
-                  style={{ background: 'var(--viz-cat-1)' }}
-                />
-                Online
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span
-                  className="h-2.5 w-2.5 rounded-sm"
-                  style={{ background: 'var(--viz-cat-2)' }}
-                />
-                Offline
-              </span>
-            </div>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart
-                data={stats.sourceData}
-                layout="vertical"
-                margin={{ left: 8, right: 16 }}
-              >
-                <CartesianGrid horizontal={false} stroke="var(--viz-grid)" />
-                <XAxis
-                  type="number"
-                  allowDecimals={false}
-                  tick={{ fill: 'var(--viz-axis)', fontSize: 12 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="name"
-                  width={110}
-                  tick={{ fill: 'var(--viz-axis)', fontSize: 12 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <Tooltip
-                  cursor={{ fill: 'transparent' }}
-                  content={<ChartTooltip />}
-                />
-                <Bar dataKey="count" barSize={14} radius={[0, 4, 4, 0]}>
-                  {stats.sourceData.map((entry, i) => (
-                    <Cell
-                      key={i}
-                      fill={
-                        entry.channel === 'online'
-                          ? 'var(--viz-cat-1)'
-                          : 'var(--viz-cat-2)'
-                      }
-                    />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
+        <SourceDonut data={stats.sourceData} />
 
         <Card>
           <CardHeader>
@@ -392,44 +574,7 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Open pipeline by stage</CardTitle>
-            <CardDescription>
-              Value of active deals at each stage.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={stats.stageData} margin={{ left: 8, right: 16 }}>
-                <CartesianGrid vertical={false} stroke="var(--viz-grid)" />
-                <XAxis
-                  dataKey="name"
-                  tick={{ fill: 'var(--viz-axis)', fontSize: 12 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  tickFormatter={(v: number) =>
-                    v >= 100000 ? `${(v / 100000).toFixed(1)}L` : String(v)
-                  }
-                  tick={{ fill: 'var(--viz-axis)', fontSize: 12 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <Tooltip
-                  cursor={{ fill: 'transparent' }}
-                  content={<ChartTooltip money />}
-                />
-                <Bar dataKey="value" barSize={40} radius={[4, 4, 0, 0]}>
-                  {stats.stageData.map((_, i) => (
-                    <Cell key={i} fill={ORDINAL[i]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
+        <PipelineSplitBar data={stats.stageData} />
 
         <Card>
           <CardHeader>

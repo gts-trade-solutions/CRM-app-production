@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/server/db';
 import { hasCapability } from '@/lib/policy';
+import { ACTIVITY_INCLUDE } from '@/lib/server/activities';
 import {
   actorContext,
+  badRequest,
   forbidden,
   parseBody,
   unauthenticated,
@@ -27,9 +29,13 @@ export async function GET(req: NextRequest) {
 
   const where = relatedType && relatedId
     ? {
-        relatedType,
-        relatedId,
         ownerId: { in: ctx.visible },
+        // A record's timeline includes multi-record tasks that merely list it,
+        // otherwise a "call these five leads" task would show on one lead only.
+        OR: [
+          { relatedType, relatedId },
+          { targets: { some: { relatedType, relatedId } } },
+        ],
       }
     : scope === 'team'
       ? { ownerId: { in: ctx.visible.filter((id) => id !== ctx.actor.id) } }
@@ -39,15 +45,17 @@ export async function GET(req: NextRequest) {
     where,
     orderBy: [{ dueAt: 'asc' }, { createdAt: 'desc' }],
     take: 200,
-    include: {
-      owner: { select: { id: true, name: true } },
-      createdBy: { select: { id: true, name: true } },
-    },
+    include: ACTIVITY_INCLUDE,
   });
 
-  // Resolve related-record display names in three batched queries.
+  // Resolve related-record display names in three batched queries, covering
+  // both the primary record and every target.
+  const pairs = rows.flatMap((r) => [
+    { type: r.relatedType, id: r.relatedId },
+    ...r.targets.map((t) => ({ type: t.relatedType, id: t.relatedId })),
+  ]);
   const idsBy = (t: string) =>
-    rows.filter((r) => r.relatedType === t).map((r) => r.relatedId);
+    Array.from(new Set(pairs.filter((p) => p.type === t).map((p) => p.id)));
   const [leads, deals, contacts] = await Promise.all([
     prisma.lead.findMany({
       where: { id: { in: idsBy('lead') } },
@@ -78,13 +86,26 @@ export async function GET(req: NextRequest) {
         : `/contacts/${id}`;
 
   return NextResponse.json({
-    activities: rows.map((r) => ({
-      ...serializeActivity(r),
-      relatedName: nameFor(r.relatedType, r.relatedId),
-      relatedHref: hrefFor(r.relatedType, r.relatedId),
-    })),
+    activities: rows.map((r) => {
+      const wire = serializeActivity(r);
+      return {
+        ...wire,
+        relatedName: nameFor(r.relatedType, r.relatedId),
+        relatedHref: hrefFor(r.relatedType, r.relatedId),
+        targets: wire.targets.map((t) => ({
+          ...t,
+          name: nameFor(t.relatedType, t.relatedId),
+          href: hrefFor(t.relatedType, t.relatedId),
+        })),
+      };
+    }),
   });
 }
+
+const relatedRef = z.object({
+  relatedType: z.enum(['lead', 'deal', 'contact']),
+  relatedId: z.string(),
+});
 
 const createSchema = z.object({
   kind: z.enum(['call', 'meeting', 'task', 'email', 'note']),
@@ -96,6 +117,12 @@ const createSchema = z.object({
   dueAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   location: z.object({ lat: z.number(), lng: z.number() }).optional(),
+  /**
+   * Every record this one task has to touch — "call these five leads". The
+   * first is mirrored into relatedType/relatedId so single-record consumers
+   * keep working unchanged.
+   */
+  targets: z.array(relatedRef).max(50).optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -115,19 +142,46 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // De-duplicate: the same record twice would make the progress count lie.
+  const targets = input.targets
+    ? Array.from(
+        new Map(
+          input.targets.map((t) => [`${t.relatedType}:${t.relatedId}`, t]),
+        ).values(),
+      )
+    : [];
+  if (input.targets && targets.length === 0) {
+    return badRequest('Pick at least one record for the task');
+  }
+  const primary = targets[0] ?? {
+    relatedType: input.relatedType,
+    relatedId: input.relatedId,
+  };
+
+  const completedAt = input.completedAt ? new Date(input.completedAt) : null;
   const activity = await prisma.salesActivity.create({
     data: {
       kind: input.kind,
       subject: input.subject,
       notes: input.notes,
-      relatedType: input.relatedType,
-      relatedId: input.relatedId,
+      relatedType: primary.relatedType,
+      relatedId: primary.relatedId,
       ownerId,
       createdById: ctx.actor.id,
       dueAt: input.dueAt ? new Date(input.dueAt) : null,
-      completedAt: input.completedAt ? new Date(input.completedAt) : null,
+      completedAt,
       lat: input.location?.lat ?? null,
       lng: input.location?.lng ?? null,
+      targets: targets.length
+        ? {
+            create: targets.map((t) => ({
+              relatedType: t.relatedType,
+              relatedId: t.relatedId,
+              // Logging a done multi-record activity marks every record done.
+              completedAt,
+            })),
+          }
+        : undefined,
     },
   });
 

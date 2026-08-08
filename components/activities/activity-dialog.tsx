@@ -70,11 +70,15 @@ export function ActivityDialog({
     null,
   );
   const [locating, setLocating] = useState(false);
+  // Multi-record mode: one task covering several leads, ticked off one by one.
+  const [multi, setMulti] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [leadSearch, setLeadSearch] = useState('');
 
   const needsPicker = !relatedType || !relatedId;
 
   // Record picker sources — only fetched while the dialog is open.
-  const { data: leadPage } = useLeads({ page: 1 });
+  const { data: leadPage } = useLeads({ page: 1, q: leadSearch });
   const { data: openDeals } = useQuery({
     queryKey: ['deals', 'picker'],
     queryFn: () =>
@@ -90,20 +94,31 @@ export function ActivityDialog({
     [users],
   );
 
+  const openLeads = useMemo(
+    () =>
+      (leadPage?.leads ?? []).filter(
+        (l) => l.status !== 'converted' && l.status !== 'disqualified',
+      ),
+    [leadPage],
+  );
+
   const pickerOptions = useMemo(() => {
     if (!needsPicker) return [];
-    const leads =
-      leadPage?.leads
-        .filter((l) => l.status !== 'converted' && l.status !== 'disqualified')
-        .map((l) => ({
-          key: `lead:${l.id}`,
-          label: `Lead — ${l.name}${l.company ? ` (${l.company})` : ''}`,
-        })) ?? [];
+    const leads = openLeads.map((l) => ({
+      key: `lead:${l.id}`,
+      label: `Lead — ${l.name}${l.company ? ` (${l.company})` : ''}`,
+    }));
     const deals =
       openDeals?.map((d) => ({ key: `deal:${d.id}`, label: `Deal — ${d.title}` })) ??
       [];
     return [...leads, ...deals];
-  }, [needsPicker, leadPage, openDeals]);
+  }, [needsPicker, openLeads, openDeals]);
+
+  function togglePicked(id: string) {
+    setPicked((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
 
   function captureLocation() {
     if (!navigator.geolocation) {
@@ -131,13 +146,25 @@ export function ActivityDialog({
 
   const effectiveOwner = ownerId || me.id;
   const canSubmit =
-    subject.trim().length > 0 && (!needsPicker || relatedKey !== '');
+    subject.trim().length > 0 &&
+    (!needsPicker || (multi ? picked.length > 0 : relatedKey !== ''));
 
   function submit() {
     if (!canSubmit) return;
     let type = relatedType;
     let id = relatedId;
-    if (needsPicker) {
+    const targets =
+      needsPicker && multi
+        ? picked.map((leadId) => ({
+            relatedType: 'lead' as const,
+            relatedId: leadId,
+          }))
+        : undefined;
+    if (targets?.length) {
+      // The server mirrors the first target onto relatedType/relatedId.
+      type = 'lead';
+      id = targets[0].relatedId;
+    } else if (needsPicker) {
       const [t, ...rest] = relatedKey.split(':');
       type = t as 'lead' | 'deal';
       id = rest.join(':');
@@ -154,15 +181,18 @@ export function ActivityDialog({
         dueAt:
           kind !== 'note' && dueAt ? new Date(dueAt).toISOString() : undefined,
         location: coords ?? undefined,
+        targets,
       },
       {
         onSuccess: () => {
           toast.success(
             effectiveOwner !== me!.id
               ? 'Assigned'
-              : kind === 'note'
-                ? 'Note added'
-                : 'Activity scheduled',
+              : targets?.length
+                ? `Task created across ${targets.length} leads`
+                : kind === 'note'
+                  ? 'Note added'
+                  : 'Activity scheduled',
           );
           setSubject('');
           setDueAt('');
@@ -170,6 +200,9 @@ export function ActivityDialog({
           setOwnerId('');
           setRelatedKey('');
           setCoords(null);
+          setMulti(false);
+          setPicked([]);
+          setLeadSearch('');
           setOpen(false);
         },
       },
@@ -192,20 +225,74 @@ export function ActivityDialog({
         </DialogHeader>
         <div className="space-y-4">
           {needsPicker && (
-            <div className="space-y-1.5">
-              <Label>Related to *</Label>
-              <Select value={relatedKey} onValueChange={setRelatedKey}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Pick a lead or deal" />
-                </SelectTrigger>
-                <SelectContent>
-                  {pickerOptions.map((o) => (
-                    <SelectItem key={o.key} value={o.key}>
-                      {o.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>{multi ? 'Leads to call *' : 'Related to *'}</Label>
+                <button
+                  type="button"
+                  onClick={() => setMulti((v) => !v)}
+                  className="text-xs font-medium text-primary underline-offset-4 hover:underline"
+                >
+                  {multi ? 'Just one record' : 'Several leads in one task'}
+                </button>
+              </div>
+              {multi ? (
+                <div className="space-y-2">
+                  <Input
+                    placeholder="Search leads by name, company or phone"
+                    value={leadSearch}
+                    onChange={(e) => setLeadSearch(e.target.value)}
+                  />
+                  <div className="max-h-48 overflow-y-auto rounded-md border">
+                    {openLeads.length === 0 ? (
+                      <p className="p-3 text-sm text-muted-foreground">
+                        No open leads match.
+                      </p>
+                    ) : (
+                      openLeads.map((l) => (
+                        <label
+                          key={l.id}
+                          className="flex cursor-pointer items-center gap-2 border-b px-3 py-2 text-sm last:border-b-0 hover:bg-accent"
+                        >
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-primary"
+                            checked={picked.includes(l.id)}
+                            onChange={() => togglePicked(l.id)}
+                          />
+                          <span className="truncate">
+                            {l.name}
+                            {l.company && (
+                              <span className="text-muted-foreground">
+                                {' '}
+                                · {l.company}
+                              </span>
+                            )}
+                          </span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {picked.length === 0
+                      ? 'Pick the leads this task covers — searching does not clear your picks.'
+                      : `${picked.length} lead${picked.length === 1 ? '' : 's'} selected. The task finishes when you have spoken to all of them.`}
+                  </p>
+                </div>
+              ) : (
+                <Select value={relatedKey} onValueChange={setRelatedKey}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Pick a lead or deal" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {pickerOptions.map((o) => (
+                      <SelectItem key={o.key} value={o.key}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           )}
           <div className="grid grid-cols-2 gap-3">
