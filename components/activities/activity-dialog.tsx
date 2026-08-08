@@ -78,7 +78,9 @@ export function ActivityDialog({
   const needsPicker = !relatedType || !relatedId;
 
   // Record picker sources — only fetched while the dialog is open.
-  const { data: leadPage } = useLeads({ page: 1, q: leadSearch });
+  // Picking "everyone at this company" only means something if the whole
+  // company is loaded, so the picker asks for the server's maximum page.
+  const { data: leadPage } = useLeads({ page: 1, q: leadSearch, pageSize: 100 });
   const { data: openDeals } = useQuery({
     queryKey: ['deals', 'picker'],
     queryFn: () =>
@@ -114,9 +116,37 @@ export function ActivityDialog({
     return [...leads, ...deals];
   }, [needsPicker, openLeads, openDeals]);
 
+  /** Leads grouped by company so a whole company can be taken in one tick. */
+  const companies = useMemo(() => {
+    const byCompany = new Map<string, typeof openLeads>();
+    for (const l of openLeads) {
+      const key = l.company?.trim() || 'No company';
+      const bucket = byCompany.get(key);
+      if (bucket) bucket.push(l);
+      else byCompany.set(key, [l]);
+    }
+    return Array.from(byCompany.entries())
+      .map(([company, leads]) => ({ company, leads }))
+      // Multi-lead companies first — they are the reason this grouping exists.
+      .sort(
+        (a, b) =>
+          b.leads.length - a.leads.length || a.company.localeCompare(b.company),
+      );
+  }, [openLeads]);
+
   function togglePicked(id: string) {
     setPicked((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
+
+  function toggleCompany(leads: typeof openLeads) {
+    const ids = leads.map((l) => l.id);
+    const allPicked = ids.every((id) => picked.includes(id));
+    setPicked((prev) =>
+      allPicked
+        ? prev.filter((id) => !ids.includes(id))
+        : Array.from(new Set([...prev, ...ids])),
     );
   }
 
@@ -243,41 +273,81 @@ export function ActivityDialog({
                     value={leadSearch}
                     onChange={(e) => setLeadSearch(e.target.value)}
                   />
-                  <div className="max-h-48 overflow-y-auto rounded-md border">
-                    {openLeads.length === 0 ? (
+                  <div className="max-h-56 overflow-y-auto rounded-md border">
+                    {companies.length === 0 ? (
                       <p className="p-3 text-sm text-muted-foreground">
                         No open leads match.
                       </p>
                     ) : (
-                      openLeads.map((l) => (
-                        <label
-                          key={l.id}
-                          className="flex cursor-pointer items-center gap-2 border-b px-3 py-2 text-sm last:border-b-0 hover:bg-accent"
-                        >
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4 accent-primary"
-                            checked={picked.includes(l.id)}
-                            onChange={() => togglePicked(l.id)}
-                          />
-                          <span className="truncate">
-                            {l.name}
-                            {l.company && (
-                              <span className="text-muted-foreground">
-                                {' '}
-                                · {l.company}
+                      companies.map(({ company, leads }) => {
+                        const ids = leads.map((l) => l.id);
+                        const chosen = ids.filter((id) =>
+                          picked.includes(id),
+                        ).length;
+                        return (
+                          <div key={company} className="border-b last:border-b-0">
+                            <label className="flex cursor-pointer items-center gap-2 bg-muted/50 px-3 py-1.5 text-xs font-medium hover:bg-accent">
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 accent-primary"
+                                checked={chosen === ids.length}
+                                // Partly-chosen companies read as indeterminate
+                                // rather than as "none selected".
+                                ref={(el) => {
+                                  if (el)
+                                    el.indeterminate =
+                                      chosen > 0 && chosen < ids.length;
+                                }}
+                                onChange={() => toggleCompany(leads)}
+                              />
+                              <span className="min-w-0 flex-1 truncate">
+                                {company}
                               </span>
-                            )}
-                          </span>
-                        </label>
-                      ))
+                              <span className="shrink-0 text-muted-foreground">
+                                {leads.length === 1
+                                  ? '1 lead'
+                                  : `all ${leads.length} leads`}
+                              </span>
+                            </label>
+                            {leads.map((l) => (
+                              <label
+                                key={l.id}
+                                className="flex cursor-pointer items-center gap-2 py-2 pl-8 pr-3 text-sm hover:bg-accent"
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="h-4 w-4 accent-primary"
+                                  checked={picked.includes(l.id)}
+                                  onChange={() => togglePicked(l.id)}
+                                />
+                                <span className="min-w-0 flex-1 truncate">
+                                  {l.name}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        );
+                      })
                     )}
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    {picked.length === 0
-                      ? 'Pick the leads this task covers — searching does not clear your picks.'
-                      : `${picked.length} lead${picked.length === 1 ? '' : 's'} selected. The task finishes when you have spoken to all of them.`}
-                  </p>
+                  <div className="flex items-start justify-between gap-2 text-xs text-muted-foreground">
+                    <p>
+                      {picked.length === 0
+                        ? 'Tick a company to take everyone in it, or pick leads one by one. Searching does not clear your picks.'
+                        : `${picked.length} lead${picked.length === 1 ? '' : 's'} selected. The task finishes when you have spoken to all of them.`}
+                    </p>
+                    {picked.length > 0 && (
+                      // Picks survive a search, so there has to be a way to
+                      // drop ones that are no longer on screen.
+                      <button
+                        type="button"
+                        onClick={() => setPicked([])}
+                        className="shrink-0 font-medium text-primary underline-offset-4 hover:underline"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <Select value={relatedKey} onValueChange={setRelatedKey}>

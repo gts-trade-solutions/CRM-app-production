@@ -58,6 +58,12 @@ export const seedLeads: Lead[] = [
   { id: 'l10', name: 'Pooja Bhatt', company: 'Bhatt Interiors', phone: '+91 98200 33446', email: 'pooja@bhattinteriors.com', source: 'website', status: 'converted', ownerId: 'u9', estimatedValue: 350000, notes: 'Converted after demo. See deal.', createdAt: daysAgo(20), updatedAt: daysAgo(12) },
   { id: 'l11', name: 'Sanjay Gupta', company: 'Gupta Steels', phone: '+91 98390 55668', email: 'sanjay@guptasteels.in', source: 'event', status: 'converted', ownerId: 'u6', estimatedValue: 950000, notes: 'Expo lead, converted to opportunity.', createdAt: daysAgo(28), updatedAt: daysAgo(18), campaignId: 'cam1' },
   { id: 'l12', name: 'Ritu Saxena', company: 'Saxena Foods', phone: '+91 99530 77880', email: 'ritu@saxenafoods.in', source: 'social_media', status: 'new', ownerId: 'u9', estimatedValue: 140000, notes: 'DM enquiry about distribution tie-up.', createdAt: daysAgo(2, 4), updatedAt: daysAgo(2, 4), campaignId: 'cam3' },
+  // Several contacts inside one buying company — a real pattern (different
+  // people own budget, purchasing and the site), and what makes a task
+  // covering a whole company worth scheduling.
+  { id: 'l13', name: 'Neha Malhotra', company: 'Malhotra Textiles', phone: '+91 98100 11224', email: 'neha@malhotratextiles.in', source: 'phone', status: 'contacted', ownerId: 'u6', estimatedValue: 180000, notes: 'Finance head — handles payment terms for the bulk order.', createdAt: daysAgo(4), updatedAt: daysAgo(2) },
+  { id: 'l14', name: 'Vikas Malhotra', company: 'Malhotra Textiles', phone: '+91 98100 11225', email: 'vikas@malhotratextiles.in', source: 'referral', status: 'new', ownerId: 'u6', estimatedValue: 210000, notes: 'Runs the second unit — wants a separate quote.', createdAt: daysAgo(3), updatedAt: daysAgo(3) },
+  { id: 'l15', name: 'Anil Reddy', company: 'Reddy Constructions', phone: '+91 99490 77890', email: 'anil@reddycon.com', source: 'field_visit', status: 'contacted', ownerId: 'u8', estimatedValue: 320000, notes: 'Site engineer — technical sign-off on the proposal.', createdAt: daysAgo(5), updatedAt: daysAgo(3) },
 ];
 
 export const seedAccounts: Account[] = [

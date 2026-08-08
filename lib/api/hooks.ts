@@ -145,11 +145,14 @@ export interface LeadFilters {
   q?: string;
   ownerId?: string;
   campaignId?: string;
+  /** Server caps this at 100; pickers ask for more than the list does. */
+  pageSize?: number;
 }
 
 export function useLeads(filters: LeadFilters) {
   const params = new URLSearchParams();
   params.set('page', String(filters.page));
+  if (filters.pageSize) params.set('pageSize', String(filters.pageSize));
   if (filters.status && filters.status !== 'all')
     params.set('status', filters.status);
   if (filters.channel && filters.channel !== 'all')

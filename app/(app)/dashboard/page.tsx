@@ -129,10 +129,10 @@ function SourceDonut({ data }: { data: SourceSlice[] }) {
 
   const group = (label: string, rows: typeof slices, count: number) =>
     rows.length > 0 && (
-      <div className="space-y-1">
-        <p className="flex items-baseline justify-between text-xs font-medium">
-          <span>{label}</span>
-          <span className="tabular-nums text-muted-foreground">
+      <div className="min-w-0 space-y-1">
+        <p className="flex items-baseline justify-between gap-2 text-xs font-medium">
+          <span className="min-w-0 truncate">{label}</span>
+          <span className="shrink-0 tabular-nums text-muted-foreground">
             {count} · {pct(count)}%
           </span>
         </p>
@@ -147,8 +147,13 @@ function SourceDonut({ data }: { data: SourceSlice[] }) {
                 className="h-2.5 w-2.5 shrink-0 rounded-sm"
                 style={{ background: d.fill }}
               />
-              <span className="truncate">{d.name}</span>
-              <span className="ml-auto shrink-0 tabular-nums">{d.count}</span>
+              {/* truncate needs min-w-0 — a flex item defaults to min-width
+                  auto and refuses to shrink below its text, which is what
+                  pushed long source names under the count. */}
+              <span className="min-w-0 flex-1 truncate" title={d.name}>
+                {d.name}
+              </span>
+              <span className="shrink-0 pl-2 tabular-nums">{d.count}</span>
             </li>
           ))}
         </ul>
@@ -169,16 +174,20 @@ function SourceDonut({ data }: { data: SourceSlice[] }) {
             No leads captured yet.
           </p>
         ) : (
-          <div className="flex flex-col items-center gap-5 sm:flex-row">
-            <div className="relative h-[200px] w-[200px] shrink-0">
+          // Wrapping rather than breakpoints: the card is half-width in the
+          // dashboard grid at some sizes and full-width at others, so the
+          // legend drops below the donut whenever it cannot keep its minimum
+          // width.
+          <div className="flex flex-wrap items-center justify-center gap-5">
+            <div className="relative h-[176px] w-[176px] shrink-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
                     data={slices}
                     dataKey="count"
                     nameKey="name"
-                    innerRadius={62}
-                    outerRadius={95}
+                    innerRadius={54}
+                    outerRadius={84}
                     paddingAngle={2}
                     stroke="none"
                     startAngle={90}
@@ -194,7 +203,7 @@ function SourceDonut({ data }: { data: SourceSlice[] }) {
               </ResponsiveContainer>
               {/* Centre headline — the channel split, read without the legend. */}
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <p className="text-2xl font-semibold leading-none">
+                <p className="text-xl font-semibold leading-none">
                   {pct(onlineCount)}%
                 </p>
                 <p className="mt-0.5 text-[11px] font-medium">Online</p>
@@ -206,7 +215,7 @@ function SourceDonut({ data }: { data: SourceSlice[] }) {
                 </p>
               </div>
             </div>
-            <div className="w-full space-y-3">
+            <div className="min-w-[190px] flex-1 space-y-3">
               {group('Online', slices.slice(0, online.length), onlineCount)}
               {group('Offline', slices.slice(online.length), offlineCount)}
             </div>
