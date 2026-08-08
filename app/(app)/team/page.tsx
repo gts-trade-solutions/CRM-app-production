@@ -5,7 +5,8 @@
 // subtree's secured orders).
 
 import { useMemo, useState } from 'react';
-import { ChevronRight, Plus, UserRound } from 'lucide-react';
+import { ChevronRight, Copy, Plus, UserRound } from 'lucide-react';
+import { toast } from 'sonner';
 import {
   TeamMember,
   useAddMember,
@@ -188,6 +189,10 @@ function TeamPageContent() {
   const addMember = useAddMember();
 
   const [open, setOpen] = useState(false);
+  const [inviteLink, setInviteLink] = useState<{
+    name: string;
+    url: string;
+  } | null>(null);
   const [form, setForm] = useState({
     name: '',
     email: '',
@@ -351,7 +356,15 @@ function TeamPageContent() {
                   }
                   onClick={() =>
                     addMember.mutate(form, {
-                      onSuccess: () => {
+                      onSuccess: (r) => {
+                        // Email delivery failed: surface the link rather than
+                        // leaving a member who can never sign in.
+                        if (!r.inviteSent && r.inviteUrl) {
+                          setInviteLink({
+                            name: r.user.name,
+                            url: r.inviteUrl,
+                          });
+                        }
                         setForm({
                           name: '',
                           email: '',
@@ -371,6 +384,43 @@ function TeamPageContent() {
             </DialogContent>
           </Dialog>
         )}
+
+        {/* Fallback when the invite email could not be sent. */}
+        <Dialog
+          open={!!inviteLink}
+          onOpenChange={(o) => !o && setInviteLink(null)}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Send this link to {inviteLink?.name}</DialogTitle>
+              <DialogDescription>
+                The invite email could not be sent. This link lets them set
+                their own password — it works once and expires in 72 hours.
+                Send it privately.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex items-center gap-2">
+              <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-2 py-1.5 text-xs">
+                {inviteLink?.url}
+              </code>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (inviteLink) {
+                    navigator.clipboard
+                      .writeText(inviteLink.url)
+                      .then(() => toast.success('Link copied'))
+                      .catch(() => toast.error('Copy it manually'));
+                  }
+                }}
+              >
+                <Copy />
+                Copy
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
 
       {chain.length > 0 && (

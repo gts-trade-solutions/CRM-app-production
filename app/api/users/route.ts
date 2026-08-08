@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { hashSync } from 'bcryptjs';
 import { prisma } from '@/lib/server/db';
 import { hasCapability } from '@/lib/policy';
 import { ROLE_LEVEL, Role } from '@/lib/types';
+import { inviteUrl, issueInvite, sendInviteEmail } from '@/lib/server/invites';
 import {
   actorContext,
+  badRequest,
   forbidden,
   parseBody,
   unauthenticated,
@@ -37,7 +38,10 @@ const createSchema = z.object({
 /**
  * Add a workforce member. Role must be strictly below the creator's; the
  * manager must sit above the new role and inside the creator's scope.
- * Interim: new members get the demo password (invite flow replaces this).
+ *
+ * No password is ever set here: the member is created without one (which
+ * `verifyCredentials` treats as unable to sign in) and emailed a single-use
+ * link to choose their own.
  */
 export async function POST(req: NextRequest) {
   const ctx = await actorContext(req);
@@ -63,11 +67,17 @@ export async function POST(req: NextRequest) {
     return forbidden('Manager must be above the new role and in your scope');
   }
 
+  const existing = await prisma.user.findUnique({
+    where: { email: input.email.toLowerCase() },
+    select: { id: true },
+  });
+  if (existing) return badRequest('That email address is already in use');
+
   const user = await prisma.user.create({
     data: {
       name: input.name,
       email: input.email.toLowerCase(),
-      passwordHash: hashSync('demo123', 10),
+      passwordHash: null,
       role: input.role,
       managerId: input.managerId,
       region: input.region,
@@ -82,5 +92,25 @@ export async function POST(req: NextRequest) {
       entity: `user:${user.id}`,
     },
   });
-  return NextResponse.json({ user: serializeUser(user) }, { status: 201 });
+
+  const token = await issueInvite(user.id);
+  const origin = new URL(req.url).origin;
+  const { sent } = await sendInviteEmail(
+    user.email,
+    user.name,
+    ctx.actor.name,
+    token,
+    origin,
+  );
+
+  return NextResponse.json(
+    {
+      user: serializeUser(user),
+      inviteSent: sent,
+      // Only when the email did not go out — otherwise the link stays
+      // between the invitee and their inbox.
+      inviteUrl: sent ? null : inviteUrl(token, origin),
+    },
+    { status: 201 },
+  );
 }

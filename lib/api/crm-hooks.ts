@@ -536,6 +536,8 @@ export interface TeamMember {
   region: string;
   title: string;
   active: boolean;
+  /** Added but has not yet set a password through their invite link. */
+  pendingInvite?: boolean;
   stats?: {
     leads: number;
     openDeals: number;
@@ -557,15 +559,39 @@ export function useTeam() {
   });
 }
 
+export interface InviteResult {
+  inviteSent: boolean;
+  /** Present only when the email did not go out, so the link is not lost. */
+  inviteUrl: string | null;
+}
+
 export function useAddMember() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: Record<string, unknown>) =>
-      api<{ user: TeamMember }>('/api/users', { method: 'POST', json: input }),
+      api<{ user: TeamMember } & InviteResult>('/api/users', {
+        method: 'POST',
+        json: input,
+      }),
     onSuccess: (r) => {
-      toast.success(`${r.user.name} added to the team`);
+      toast.success(
+        r.inviteSent
+          ? `${r.user.name} added — invite emailed to ${r.user.email}`
+          : `${r.user.name} added — send them the invite link`,
+      );
       qc.invalidateQueries({ queryKey: ['team'] });
       qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+export function useResendInvite() {
+  return useMutation({
+    mutationFn: (userId: string) =>
+      api<InviteResult>(`/api/users/${userId}/invite`, { method: 'POST' }),
+    onSuccess: (r) => {
+      if (r.inviteSent) toast.success('Invite email sent');
     },
     onError: (e: Error) => toast.error(e.message),
   });

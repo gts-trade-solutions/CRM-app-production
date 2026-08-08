@@ -135,12 +135,47 @@ sudo ufw enable
 
 MySQL must remain bound to localhost (default) — never expose 3306.
 
+## First run: creating the organisation
+
+A production deployment starts with an empty database and **no demo data**.
+
+Leave `NEXT_PUBLIC_DEMO_MODE` out of `.env` entirely. With it unset:
+
+- the login page shows only the credentials form — no persona grid;
+- `npm run db:seed` refuses to run, so nobody can wipe live data with a
+  mistyped command.
+
+Create the single account that cannot be invited, then never use the script
+again (it refuses once an active admin exists):
+
+```bash
+cd /opt/salesforce-crm
+sudo -u crm env ADMIN_NAME="Full Name" ADMIN_EMAIL=you@company.com \
+  ADMIN_PASSWORD='a-long-strong-password' npm run bootstrap:admin
+```
+
+It also writes the organisation settings row and the pipeline stage rows, so
+quotations and the kanban work on a fresh database.
+
+Everyone else is added in-app from **Team → Add member**. Each gets an
+emailed single-use link (72-hour expiry) to set their own password; until
+they use it they cannot sign in at all. Only the SHA-256 of that token is
+stored. If email is not working yet, the app shows the link to the manager
+to pass on privately, and Admin → Users can re-send it — which also revokes
+the previous link.
+
+SES must be able to send to your team's domain before you rely on this: if
+the account is still in the SES sandbox, only verified addresses receive
+mail. Check with `aws ses get-account-sending-enabled` and the sending quota.
+
 ## Checklist
 
 - [ ] DNS A record → VPS; TLS issued; http→https redirect active
 - [ ] `.env` complete; fresh `NEXTAUTH_SECRET`; strong DB password
+- [ ] `NEXT_PUBLIC_DEMO_MODE` **unset** — persona grid gone, seeding blocked
+- [ ] `npm run bootstrap:admin` run once; its password stored in a manager
+- [ ] Invite email actually delivered to a real teammate (not sandboxed)
 - [ ] `systemctl status salesforce-crm` active; `/api/health` ok via https
-- [ ] Demo data decision made (clean org vs seeded demo)
 - [ ] Backup cron installed AND restore drill performed
 - [ ] Uptime monitor pointed at /api/health
 - [ ] ufw enabled; 3306 not exposed

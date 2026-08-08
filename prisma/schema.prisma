@@ -83,6 +83,12 @@ model User {
   // Secret used by the calendar-subscription URL. Calendar clients cannot log
   // in, so this token is the credential — rotatable, and null until issued.
   calendarToken String? @unique
+  // Invite to set a first password. Only the SHA-256 of the token is stored,
+  // so a database leak cannot be replayed into account takeover; the raw
+  // token exists only in the email. Cleared the moment it is used.
+  inviteTokenHash String?   @unique
+  inviteExpiresAt DateTime?
+  invitedAt       DateTime?
   createdAt    DateTime @default(now())
 
   leads           Lead[]

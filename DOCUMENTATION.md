@@ -174,6 +174,20 @@ campaign ROI.
 
 ## 7. Security & privacy
 
+- **Credentials**: no account is ever created with a password. A new member
+  is written with `passwordHash: null` — which `verifyCredentials` treats as
+  "cannot sign in", whatever is guessed — and emailed a single-use link to
+  choose their own. Only the SHA-256 of that token is stored, so a database
+  leak cannot be replayed into account takeover; acceptance is a
+  compare-and-set on the hash, making the link single-use under concurrency.
+  Re-inviting issues a new token (revoking the old one) and is refused once
+  the member has a password, so a manager cannot take over a colleague's
+  account. The first administrator, who has nobody to invite them, comes
+  from `npm run bootstrap:admin`, which refuses to run twice.
+- **Demo mode** (`NEXT_PUBLIC_DEMO_MODE`): off unless explicitly `"true"`.
+  It gates the login page's persona grid and the seed script — which wipes
+  the database, so the flag is what stands between a mistyped command and
+  production data loss.
 - **Headers**: CSP (no eval in production), HSTS, nosniff, DENY framing,
   strict referrer, Permissions-Policy (mic/geo self-only).
 - **Rate limits** (middleware, per IP): sign-in 10/min, writes 60/min,

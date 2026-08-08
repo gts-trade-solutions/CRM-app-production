@@ -16,14 +16,33 @@ Prerequisites: Node 20+, MySQL 8 running locally.
 npm install
 cp .env.example .env         # fill DATABASE_URL, NEXTAUTH_URL/SECRET
 npm run db:push              # create/update the schema
-npm run db:seed              # load the demo dataset
 npm run dev                  # http://localhost:3000
 ```
 
-**Demo sign-in:** every seeded member uses password `demo123`
-(e.g. `sneha@salesforce.demo` — sales rep, `rahul@salesforce.demo` — team
-lead, `arjun@salesforce.demo` — admin). The login page also offers a
-one-click persona grid.
+Then choose how to populate it.
+
+**Demo instance** (client showcases, local exploration) — set
+`NEXT_PUBLIC_DEMO_MODE="true"` in `.env`, then:
+
+```bash
+npm run db:seed              # WIPES the database, loads the demo dataset
+```
+
+Every seeded member uses password `demo123` (`sneha@salesforce.demo` — rep,
+`rahul@salesforce.demo` — team lead, `arjun@salesforce.demo` — admin), and
+the login page offers a one-click persona grid.
+
+**Real instance** — leave `NEXT_PUBLIC_DEMO_MODE` unset. The seed script
+refuses to run, the persona grid does not render, and you create the one
+account that cannot be invited:
+
+```bash
+ADMIN_NAME="Your Name" ADMIN_EMAIL=you@company.com \
+  ADMIN_PASSWORD='choose-a-strong-one' npm run bootstrap:admin
+```
+
+Sign in as that admin and add everyone else from the Team page; each one
+gets an emailed link to set their own password. No shared password exists.
 
 ### Scripts
 

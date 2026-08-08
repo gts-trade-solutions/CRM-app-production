@@ -2,6 +2,7 @@
 
 // Role-scoped dashboard — all aggregates computed in SQL on the server.
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { format, isPast, isToday } from 'date-fns';
 import {
@@ -33,7 +34,7 @@ import {
   useToggleActivity,
 } from '@/lib/api/hooks';
 import { ROLE_LABELS } from '@/lib/types';
-import { formatINR } from '@/lib/utils';
+import { cn, formatINR } from '@/lib/utils';
 import {
   Card,
   CardContent,
@@ -102,6 +103,11 @@ function ChartTooltip({
  * source, its count and its share — so identity is never colour-alone.
  */
 function SourceDonut({ data }: { data: SourceSlice[] }) {
+  // Hovering swaps the centre readout instead of floating a tooltip over it —
+  // a tooltip anchored to the cursor lands on top of the centre text for any
+  // slice on the near side of the ring.
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+
   const online = data
     .filter((d) => d.channel === 'online')
     .sort((a, b) => b.count - a.count);
@@ -126,8 +132,14 @@ function SourceDonut({ data }: { data: SourceSlice[] }) {
   const onlineCount = online.reduce((s, d) => s + d.count, 0);
   const offlineCount = total - onlineCount;
   const pct = (n: number) => (total ? Math.round((n / total) * 100) : 0);
+  const active = activeIndex === null ? null : (slices[activeIndex] ?? null);
 
-  const group = (label: string, rows: typeof slices, count: number) =>
+  const group = (
+    label: string,
+    rows: typeof slices,
+    count: number,
+    offset: number,
+  ) =>
     rows.length > 0 && (
       <div className="min-w-0 space-y-1">
         <p className="flex items-baseline justify-between gap-2 text-xs font-medium">
@@ -137,10 +149,17 @@ function SourceDonut({ data }: { data: SourceSlice[] }) {
           </span>
         </p>
         <ul className="space-y-1">
-          {rows.map((d) => (
+          {rows.map((d, i) => (
             <li
               key={d.name}
-              className="flex items-center gap-2 text-xs text-muted-foreground"
+              // Hovering the legend drives the same readout — the only way in
+              // on a touch screen, where there is no pointer on the ring.
+              onMouseEnter={() => setActiveIndex(offset + i)}
+              onMouseLeave={() => setActiveIndex(null)}
+              className={cn(
+                'flex items-center gap-2 rounded-sm text-xs text-muted-foreground transition-colors',
+                activeIndex === offset + i && 'bg-accent text-foreground',
+              )}
             >
               <span
                 aria-hidden
@@ -193,31 +212,64 @@ function SourceDonut({ data }: { data: SourceSlice[] }) {
                     startAngle={90}
                     endAngle={-270}
                     isAnimationActive={false}
+                    onMouseEnter={(_, i) => setActiveIndex(i)}
+                    onMouseLeave={() => setActiveIndex(null)}
                   >
-                    {slices.map((d) => (
-                      <Cell key={d.name} fill={d.fill} />
+                    {slices.map((d, i) => (
+                      <Cell
+                        key={d.name}
+                        fill={d.fill}
+                        // Dimming the rest is the second channel telling you
+                        // which slice the centre is describing.
+                        opacity={
+                          activeIndex === null || activeIndex === i ? 1 : 0.35
+                        }
+                      />
                     ))}
                   </Pie>
-                  <Tooltip content={<ChartTooltip />} />
                 </PieChart>
               </ResponsiveContainer>
-              {/* Centre headline — the channel split, read without the legend. */}
-              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <p className="text-xl font-semibold leading-none">
-                  {pct(onlineCount)}%
-                </p>
-                <p className="mt-0.5 text-[11px] font-medium">Online</p>
-                <p className="mt-1.5 text-[11px] text-muted-foreground">
-                  {pct(offlineCount)}% Offline
-                </p>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {total} lead{total === 1 ? '' : 's'}
-                </p>
+              {/* Centre readout: the channel split at rest, the hovered
+                  source while pointing at one. Only ever one thing here, so
+                  nothing can overlap. */}
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-8 text-center">
+                {active ? (
+                  <>
+                    <p className="text-xl font-semibold leading-none tabular-nums">
+                      {active.count}
+                    </p>
+                    <p className="mt-1 line-clamp-2 text-[11px] font-medium leading-tight">
+                      {active.name}
+                    </p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {pct(active.count)}% ·{' '}
+                      {active.channel === 'online' ? 'Online' : 'Offline'}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xl font-semibold leading-none">
+                      {pct(onlineCount)}%
+                    </p>
+                    <p className="mt-0.5 text-[11px] font-medium">Online</p>
+                    <p className="mt-1.5 text-[11px] text-muted-foreground">
+                      {pct(offlineCount)}% Offline
+                    </p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {total} lead{total === 1 ? '' : 's'}
+                    </p>
+                  </>
+                )}
               </div>
             </div>
             <div className="min-w-[190px] flex-1 space-y-3">
-              {group('Online', slices.slice(0, online.length), onlineCount)}
-              {group('Offline', slices.slice(online.length), offlineCount)}
+              {group('Online', slices.slice(0, online.length), onlineCount, 0)}
+              {group(
+                'Offline',
+                slices.slice(online.length),
+                offlineCount,
+                online.length,
+              )}
             </div>
           </div>
         )}

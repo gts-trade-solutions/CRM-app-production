@@ -27,6 +27,16 @@ const prisma = new PrismaClient();
 const paise = (rupees: number) => BigInt(Math.round(rupees * 100));
 
 async function main() {
+  // This script deletes every row before writing fictional data. Requiring an
+  // explicit demo flag is what stands between a mistyped command and a wiped
+  // production database.
+  if (process.env.NEXT_PUBLIC_DEMO_MODE !== 'true') {
+    throw new Error(
+      'Refusing to seed: this wipes all data and loads the demo dataset.\n' +
+        'Set NEXT_PUBLIC_DEMO_MODE=true to allow it. On a real deployment use\n' +
+        '`npm run bootstrap:admin` instead, which creates one admin and nothing else.',
+    );
+  }
   // Wipe in FK-safe order.
   await prisma.dealLineItem.deleteMany();
   await prisma.quote.deleteMany();

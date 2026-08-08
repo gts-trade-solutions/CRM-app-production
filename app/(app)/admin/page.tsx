@@ -5,7 +5,8 @@
 // pipeline vocabulary. Every mutation is capability-checked server-side.
 
 import { useMemo, useState } from 'react';
-import { Pencil, Plus, UserX } from 'lucide-react';
+import { Copy, Pencil, Plus, Send, UserX } from 'lucide-react';
+import { toast } from 'sonner';
 import {
   DupeRecord,
   TeamMember,
@@ -13,6 +14,7 @@ import {
   useDupes,
   useMergeDupes,
   useProducts,
+  useResendInvite,
   useSetTarget,
   useSettings,
   useTeam,
@@ -236,6 +238,12 @@ function UsersTab() {
   const { data: team } = useTeam();
   const updateMember = useUpdateMember();
   const deactivate = useDeactivateMember();
+  const resendInvite = useResendInvite();
+  // Shown only when email delivery failed — the manager passes the link on.
+  const [inviteLink, setInviteLink] = useState<{
+    name: string;
+    url: string;
+  } | null>(null);
 
   const [editing, setEditing] = useState<TeamMember | null>(null);
   const [edit, setEdit] = useState({
@@ -318,19 +326,53 @@ function UsersTab() {
                     : '—'}
                 </TableCell>
                 <TableCell>
-                  <Badge
-                    variant={!user.active ? 'secondary' : 'outline'}
-                    className={cn(
-                      user.active &&
-                        'border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300',
-                    )}
-                  >
-                    {user.active ? 'Active' : 'Inactive'}
-                  </Badge>
+                  {user.active && user.pendingInvite ? (
+                    // They exist but cannot sign in yet — worth saying plainly
+                    // rather than showing them as Active.
+                    <Badge
+                      variant="outline"
+                      className="border-transparent bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                    >
+                      Invite pending
+                    </Badge>
+                  ) : (
+                    <Badge
+                      variant={!user.active ? 'secondary' : 'outline'}
+                      className={cn(
+                        user.active &&
+                          'border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300',
+                      )}
+                    >
+                      {user.active ? 'Active' : 'Inactive'}
+                    </Badge>
+                  )}
                 </TableCell>
                 <TableCell>
                   {user.active && (
                     <div className="flex gap-1">
+                      {user.pendingInvite && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          disabled={resendInvite.isPending}
+                          onClick={() =>
+                            resendInvite.mutate(user.id, {
+                              onSuccess: (r) => {
+                                if (!r.inviteSent && r.inviteUrl)
+                                  setInviteLink({
+                                    name: user.name,
+                                    url: r.inviteUrl,
+                                  });
+                              },
+                            })
+                          }
+                          aria-label={`Resend invite to ${user.name}`}
+                          title="Resend invite"
+                        >
+                          <Send />
+                        </Button>
+                      )}
                       <Button
                         variant="ghost"
                         size="icon"
@@ -533,6 +575,44 @@ function UsersTab() {
               Deactivate & hand over
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Email delivery failed — the invite must not be lost, so hand the
+          link to whoever is standing here to pass on. */}
+      <Dialog
+        open={!!inviteLink}
+        onOpenChange={(o) => !o && setInviteLink(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Send this link to {inviteLink?.name}</DialogTitle>
+            <DialogDescription>
+              The invite email could not be sent. This link lets them set their
+              own password — it works once and expires in 72 hours. Send it
+              privately.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2">
+            <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-2 py-1.5 text-xs">
+              {inviteLink?.url}
+            </code>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (inviteLink) {
+                  navigator.clipboard
+                    .writeText(inviteLink.url)
+                    .then(() => toast.success('Link copied'))
+                    .catch(() => toast.error('Copy it manually'));
+                }
+              }}
+            >
+              <Copy />
+              Copy
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </Card>

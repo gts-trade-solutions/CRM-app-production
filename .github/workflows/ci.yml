@@ -25,6 +25,9 @@ jobs:
       DATABASE_URL: mysql://root:root@127.0.0.1:3306/salesforce
       NEXTAUTH_URL: http://localhost:3000
       NEXTAUTH_SECRET: ci-only-secret-not-used-in-production
+      # The integration suite runs against the seeded dataset, and seeding
+      # refuses without this flag. Scoped to the throwaway CI database.
+      NEXT_PUBLIC_DEMO_MODE: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

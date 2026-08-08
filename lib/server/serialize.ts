@@ -27,6 +27,9 @@ export function serializeUser(u: User) {
     region: u.region,
     title: u.title,
     active: u.active,
+    // No password yet means the invite has not been accepted. The hash itself
+    // never leaves the server.
+    pendingInvite: u.passwordHash === null,
   };
 }
 
